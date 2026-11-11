@@ -1,9 +1,9 @@
 # Add this file to YOUR repository at .github/workflows/s2arm-shell.yml.
 # Experimental 2x rendering on pinned S2Arm 0.2.9; default remains 1x.
 # Self-contained: the patch and matching-source packaging are included below.
-# Revision 3: usage-based render-target scaling, first-access fallback and session reset.
-# Full source identity / closure checks stay enabled; GPU execution is recorded separately.
-name: S2Arm Shell 2x (macOS)
+# Revision 3.1: GPU eligibility checks unified memory, Metal4 and residency creation.
+# Render-scale source is unchanged from revision 3; full source / closure checks stay enabled.
+name: S2Arm Shell 2x CI3.1 (macOS)
 
 on:
   workflow_dispatch:
@@ -1546,11 +1546,12 @@ jobs:
           # dependency first so its stderr survives, then let Shell reuse its cache.
           bash services/opus/build.sh ios-arm64 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/opus-build.log"
 
-      - name: Compile Metal regressions and run when a GPU is present
+      - name: Compile Metal regressions and run on a capable GPU
         working-directory: source
         timeout-minutes: 30
         run: |
           set -euo pipefail
+          echo 'S2ARM_CI_REVISION=3.1-capability-gate'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
           "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_rscale_access build/tests/t_nvn_pkg_gpu_write 2>&1 | tee "$logs/rscale-native-build.log"
@@ -1558,10 +1559,31 @@ jobs:
           #import <Foundation/Foundation.h>
           #import <Metal/Metal.h>
           #include <stdio.h>
+          // 77 = prerequisites unavailable; 1 = unexpected initialization failure;
+          // 0 only means eligible to start the real tests, never that they already passed.
+          static int s2a_ci_gpu_status(int device, int unified, int metal4, int residency) {
+              if (!device || !unified || !metal4) return 77;
+              return residency ? 0 : 1;
+          }
           int main(void) { @autoreleasepool {
               id<MTLDevice> device=MTLCreateSystemDefaultDevice();
-              if (!device) { puts("No Metal device on this runner"); return 77; }
-              printf("Metal device: %s\n", device.name.UTF8String); return 0;
+              if (!device) { puts("No Metal device on this runner"); return s2a_ci_gpu_status(0,0,0,0); }
+              int unified=device.hasUnifiedMemory, metal4=0;
+              if (@available(macOS 26.0, *)) metal4=[device supportsFamily:MTLGPUFamilyMetal4];
+              printf("Metal device: %s; unified memory: %d; Metal4 family: %d\n",device.name.UTF8String,unified,metal4);
+              if (!unified || !metal4) {
+                  puts("SKIP: full Metal3/4 test matrix requires unified memory and Metal4 family support.");
+                  return s2a_ci_gpu_status(1,unified,metal4,0);
+              }
+              // Match nvn_mtl.m's mandatory residency-set creation. A compatible device
+              // failing this allocation is an error, not an excuse to skip a real failure.
+              MTLResidencySetDescriptor *descriptor=[MTLResidencySetDescriptor new];
+              descriptor.initialCapacity=4096;
+              NSError *error=nil;
+              id<MTLResidencySet> residency=[device newResidencySetWithDescriptor:descriptor error:&error];
+              if (!residency) fprintf(stderr,"MTLResidencySet creation failed: %s\n",error ? error.description.UTF8String : "no NSError supplied");
+              else puts("GPU prerequisites ready: unified memory, Metal4 and MTLResidencySet.");
+              return s2a_ci_gpu_status(1,unified,metal4,residency!=nil);
           } }
           METAL_DEVICE
           xcrun --sdk macosx clang -fobjc-arc "$RUNNER_TEMP/s2arm-metal-device.m" -framework Foundation -framework Metal -o "$RUNNER_TEMP/s2arm-metal-device"
@@ -1569,8 +1591,8 @@ jobs:
           "$RUNNER_TEMP/s2arm-metal-device" > "$logs/rscale-device.log" 2>&1 || device_status=$?
           cat "$logs/rscale-device.log"
           if [ "$device_status" -eq 77 ]; then
-            echo 'Metal fixture compilation: PASS. GPU execution: SKIPPED (runner has no Metal device). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
-            echo '::warning::No Metal device. Native fixtures compiled, but GPU behavior is unverified.'
+            echo 'Metal fixture compilation: PASS. GPU execution: SKIPPED (runner lacks required capabilities for the full Metal3/4 matrix; see rscale-device.log). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
+            echo '::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.'
           elif [ "$device_status" -ne 0 ]; then
             echo "::error::Metal device probe failed ($device_status)."
             exit "$device_status"
@@ -1600,7 +1622,7 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.2.9 experimental 2x revision 3; default 1x"
+            echo "Custom build: S2Arm 0.2.9 experimental 2x revision 3; CI 3.1; default 1x"
             echo "Upstream baseline: 77b436b57b0739447a1db27718085d34840e9917"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
@@ -1617,9 +1639,10 @@ jobs:
           git bundle verify "$output/artifact/S2Arm-source.bundle"
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
+          cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
           printf '0.2.9\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch version.txt rscale-gpu-status.txt build-info.txt > SHA256SUMS.txt
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
           echo 'Shell build completed. Download S2Arm-Shell-2x from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell

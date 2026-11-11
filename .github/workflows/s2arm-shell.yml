@@ -107,6 +107,14 @@ jobs:
           git diff --exit-code
           git diff --cached --exit-code
 
+      - name: Build Opus dependency with visible diagnostics
+        working-directory: source
+        run: |
+          set -euo pipefail
+          # shell_build.sh deletes BUILD/cs/opus_ios.err on exit. Build the same
+          # dependency first so its stderr survives, then let Shell reuse its cache.
+          bash services/opus/build.sh ios-arm64 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/opus-build.log"
+
       - name: Build Shell with the upstream entry point
         working-directory: source
         run: |

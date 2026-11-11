@@ -1,6 +1,7 @@
 # Add this file to YOUR repository at .github/workflows/s2arm-shell.yml.
 # Experimental 2x rendering on pinned S2Arm 0.2.9; default remains 1x.
 # Self-contained: the patch and matching-source packaging are included below.
+# Revision 2: all committed source roots enter the Shell input identity; closure checks stay enabled.
 name: S2Arm Shell 2x (macOS)
 
 on:
@@ -107,10 +108,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "77b436b57b0739447a1db27718085d34840e9917"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
           diff --git a/docs/坑记录.md b/docs/坑记录.md
-          index 438051d..c1cb182 100644
+          index 438051d..2a160c9 100644
           --- a/docs/坑记录.md
           +++ b/docs/坑记录.md
-          @@ -1481,3 +1481,11 @@ Apple 芯片 Mac（macOS 27.2、Python 3.12.16），以 `9749debe` 为基线，
+          @@ -1481,3 +1481,19 @@ Apple 芯片 Mac（macOS 27.2、Python 3.12.16），以 `9749debe` 为基线，
            **实验数据（期望 → 真结果）**：debian:trixie-slim arm64 容器、基线 `10c0a025`。只装 `libvulkan1 mesa-vulkan-drivers` → `cannot find -lvulkan` 链接红；补装 `libvulkan-dev` → lavapipe（llvmpipe，LLVM 19.1.7）起来，`nvn_vk_readback_gpu_test` 22 checks 0 failed、`nvn_vk_frame_tsv_test` 14 checks 0 failed。
            
            **做法**：容器里跑要 `-lvulkan` 链接或 lavapipe 执行的宿主测试，apt 三件套一起装：`libvulkan1 libvulkan-dev mesa-vulkan-drivers`。
@@ -122,6 +123,14 @@ jobs:
           +**实验数据（期望 → 真结果）**：Windows x64 / GCC，直接提取生产 C 标量函数编译的 `graphics/nvn/tests/rscale_math_probe.py`，1280×720 输入请求 2：期望 2560×1440 → 基线 1280×720；改后 2560×1440。11 项配置、尺寸、矩形与边界检查通过。分别恢复旧上限或旧开启条件，1.5 / 2 判据均失败。没有运行 Metal GPU、iOS 编译或真机画面测试，不据此声称游戏已支持 2x。
           +
           +**做法**：上限 2、非 1 开启，保留既有纹理筛选与回退。已缩放纹理不能按游戏坐标局部 CPU 上传；初次缩放和后续宽屏增长均在分配前检查引擎既有 16384 尺寸上限。相应 GPU 回归已补充，待 Apple Silicon 宿主执行。
+          +
+          +## 私有云构建：已出壳后被访问时间输入检查挡住
+          +
+          +**现象**：2026-11-11 GitHub Actions `43051586883`，macOS 27.0.1 / Xcode 27.1，2x 源码快照 `db2f84398f0a22c057decc37496eec1d126195e4`。Shell `82f5c81c2aba1f89` 已封出 42 文件，随后闭包记录报 3073 个表外读取，样例含 AGENTS.md、README.md、Android 源码。日志没有文件读取进程追踪，尚不能确认具体读取者。
+          +
+          +**机制与做法**：访问时间观察覆盖了精简依赖表之外的文件。此私有构建改用保守的完整源码输入声明：35 个根文件 / 目录全部记「入」，任何已提交文件变化都进入 Shell 编号，接受文档变化也需重出壳的代价。没有把未知依赖记成无关、关闭检查或改用仅建议模式；仍核闭包、产物内容与配套源码身份。仅适用于此固定源码云构建，不声称是上游最小依赖表。
+          +
+          +**实验数据（期望 → 真结果）**：Windows 控制访问时间的生产 checker 测试（非 APFS 读取者复现）：模拟三个已报告路径与两个原有输入，旧表期望放行 → 退出 1 点名三个路径；新表 → 退出 0。再加入未声明的新根文件 → 退出 1；不是无条件放行。新表覆盖全部已跟踪源码。实际 macOS 出壳收尾仍待新工作流验证。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
           index ea5e117..1f596c2 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
@@ -409,6 +418,270 @@ jobs:
                  paint(want, W, H, BLUE, NULL, 0, 1);   // 打包贴图的 ReadTexels 以池内存为准（读到打包原数据），GPU 内容走 CopyTextureToBuffer
                  begin(); { NVNcopyRegion r = {0, 0, 0, W, H, 1}; API(nvnCommandBufferCopyTextureToBuffer)(&commands, &P, NULL, &r, pa + BUF_OFFSET, 0); } submit();
                  compare((uint8_t *)storage + BUF_OFFSET, want, W, H, NULL, 0, 0, "P 内容 = 清屏蓝"); }
+          diff --git a/pack/stage_inputs/shell.tsv b/pack/stage_inputs/shell.tsv
+          index a045f96..c590623 100644
+          --- a/pack/stage_inputs/shell.tsv
+          +++ b/pack/stage_inputs/shell.tsv
+          @@ -1,223 +1,41 @@
+          -# 预编壳输入表（pack/shell_build.sh make ios 出壳实际读到的仓库文件；壳编号 = 「入」在 HEAD 上的对象号指纹，pack/shell/manifest.py inputs_key）。
+          -#   生成：缓存都指空目录冷出壳，S2A_SHELL_CLOSURE_SUGGEST=<文件> bash pack/shell_build.sh <壳目录>；之后每次出壳都核（pack/shell/closure.py check），读到表外文件即红
+          -#   iOS 游戏库界面（runtime/build.mk S2A_SHELLUI）：本表有「入	shell」行 = 出壳编进库界面（pack/shell_build.sh 只按这行定开关）；11-07 起带上（多款容器要库界面；单款包不调库界面，弱链接不影响）
+          +# 私有云端 2x 构建：保守输入闭包，整份固定源码均参与 Shell 编号。
+          +# 2026-11-11 run 43051586883：已产出 42 文件，收尾观察到 3073 个表外文件（含文档、Android 源码）。
+          +# 访问时间无法区分编译依赖与构建工具的仓库扫描；这里声明完整源码，不忽略任何观察到的已跟踪输入。
+          +# 每个根目录的 Git tree 对象覆盖其全部已提交子项；根文件用 blob 对象。文档变化也会换 Shell 编号。
+          +# 仍使用上游 closure.py check、manifest.py 的内容校验和配套源码对号；没有关闭检查或改成仅建议。
+          +# 入 shell 仍保证构建游戏库界面。此表是保守的出壳依赖，不声称每个文件都被编译进二进制。
+          +入	.clang-format
+           入	.editorconfig
+          +入	.gitattributes
+          +入	.github
+          +入	.gitignore
+          +入	AGENTS.md
+          +入	CODE_OF_CONDUCT.md
+          +入	CONTRIBUTING.md
+           入	Directory.Build.rsp
+          +入	LICENSE
+          +入	LLM_POLICY.md
+           入	Makefile
+          -入	graphics/vulkan/cache/ComputeTranslationProfile.cs
+          -入	graphics/build.mk
+          -入	graphics/loop
+          -入	graphics/metal/Makefile
+          -入	graphics/metal/cs
+          -入	graphics/metal/fit_judge.h
+          -入	graphics/metal/gal_aa.m
+          -入	graphics/metal/gal_abi.h
+          -入	graphics/metal/gal_be.h
+          -入	graphics/metal/gal_border.m
+          -入	graphics/metal/gal_buf.m
+          -入	graphics/metal/gal_cnt.m
+          -入	graphics/dsx/gal_colorround.c
+          -入	graphics/dsx/gal_colorround.h
+          -入	graphics/metal/gal_core.m
+          -入	graphics/metal/gal_draw.m
+          -入	graphics/metal/gal_draw_internal.h
+          -入	graphics/metal/gal_fbr.m
+          -入	graphics/metal/gal_formats.h
+          -入	graphics/metal/gal_gpuwd.h
+          -入	graphics/metal/gal_gpuwd.m
+          -入	graphics/metal/gal_internal.h
+          -入	graphics/metal/gal_ios_layer.m
+          -入	graphics/dsx/gal_log.h
+          -入	graphics/metal/gal_logicop.m
+          -入	graphics/metal/gal_pass.m
+          -入	graphics/metal/gal_present.m
+          -入	graphics/metal/gal_probe.m
+          -入	graphics/metal/gal_prog.m
+          -入	graphics/metal/gal_pstat.h
+          -入	graphics/metal/gal_pstat.m
+          -入	graphics/metal/gal_rt.m
+          -入	graphics/metal/gal_samp_caps.h
+          -入	graphics/dsx/gal_spill.c
+          -入	graphics/dsx/gal_spill.h
+          -入	graphics/dsx/gal_spvx.c
+          -入	graphics/dsx/gal_spvx.h
+          -入	graphics/metal/gal_state.m
+          -入	graphics/metal/gal_tess.m
+          -入	graphics/metal/gal_tess_d3d.h
+          -入	graphics/dsx/gal_tess.h
+          -入	graphics/dsx/gal_tessxc.c
+          -入	graphics/dsx/gal_tessxc.h
+          -入	graphics/metal/gal_tex.m
+          -入	graphics/metal/gal_thrcpu.m
+          -入	graphics/metal/gal_vkx.m
+          -入	graphics/metal/gal_vpull.m
+          -入	graphics/dsx/gal_vpullc.c
+          -入	graphics/dsx/dsx_xc.c
+          -入	graphics/dsx/dsx_abi.h
+          -入	graphics/dsx/Makefile
+          -入	graphics/metal/gal_wline.m
+          -入	graphics/metal/mtl_slot.h
+          -入	graphics/metal/shaders/aa_blend.metal
+          -入	graphics/metal/shaders/aa_edge.metal
+          -入	graphics/metal/shaders/aa_neighbour.metal
+          -入	graphics/metal/tools/abi_hash.py
+          -入	graphics/metal/tools/embed_aa_lut.py
+          -入	graphics/metal/tools/embed_msl.py
+          -入	graphics/metal/tools/gal_xc.c
+          -入	graphics/nvn/Makefile
+          -入	graphics/nvn/fe_stat.h
+          -入	graphics/nvn/gfx/gl
+          -入	graphics/nvn/gfx/nvn
+          -入	graphics/nvn/gfx/tex/nvn_bcd_msl.h
+          -入	graphics/nvn/gfx/tex/nvn_bcdec.c
+          -入	graphics/nvn/gfx/tex/nvn_bcdec.h
+          -入	graphics/nvn/gfx/tex/nvn_deswizzle.c
+          -入	graphics/nvn/gfx/tex/nvn_deswizzle.h
+          -入	graphics/nvn/gfx/tex/nvn_deswizzle_gpu.h
+          -入	graphics/nvn/gfx/tex/nvn_deswizzle_gpu.m
+          -入	graphics/nvn/gfx/tex/nvn_fmt_mtl.c
+          -入	graphics/nvn/gfx/tex/nvn_fmt_mtl.h
+          -入	translator/dmsh_chain.py
+          -入	translator/dmsh_xlate/Program.cs
+          -入	graphics/nvn/gfx/vk
+          -入	graphics/nvn/graphics_session.c
+          -入	graphics/nvn/graphics_session.h
+          -入	graphics/nvn/host
+          -入	graphics/nvn/host_adapt.m
+          -入	graphics/nvn/lib_pack.inc
+          -入	graphics/nvn/texture_extent.inc
+          -入	graphics/nvn/third_party/bcdec/bcdec.h
+          -入	graphics/nvn/third_party/vulkan-headers
+          -入	graphics/nvn/widen_fallback.inc
+          -入	graphics/nvn/widen_glue.inc
+          -入	graphics/third_party/glslang/build.sh
+          -入	graphics/third_party/spirv_cross/GLSL.std.450.h
+          -入	graphics/third_party/spirv_cross/NonSemanticShaderDebugInfo100.h
+          -入	graphics/third_party/spirv_cross/spirv.h
+          -入	graphics/third_party/spirv_cross/spirv.hpp
+          -入	graphics/third_party/spirv_cross/spirv_cfg.cpp
+          -入	graphics/third_party/spirv_cross/spirv_cfg.hpp
+          -入	graphics/third_party/spirv_cross/spirv_common.hpp
+          -入	graphics/third_party/spirv_cross/spirv_cross.cpp
+          -入	graphics/third_party/spirv_cross/spirv_cross.hpp
+          -入	graphics/third_party/spirv_cross/spirv_cross_c.cpp
+          -入	graphics/third_party/spirv_cross/spirv_cross_c.h
+          -入	graphics/third_party/spirv_cross/spirv_cross_containers.hpp
+          -入	graphics/third_party/spirv_cross/spirv_cross_error_handling.hpp
+          -入	graphics/third_party/spirv_cross/spirv_cross_parsed_ir.cpp
+          -入	graphics/third_party/spirv_cross/spirv_cross_parsed_ir.hpp
+          -入	graphics/third_party/spirv_cross/spirv_glsl.cpp
+          -入	graphics/third_party/spirv_cross/spirv_glsl.hpp
+          -入	graphics/third_party/spirv_cross/spirv_msl.cpp
+          -入	graphics/third_party/spirv_cross/spirv_msl.hpp
+          -入	graphics/third_party/spirv_cross/spirv_parser.cpp
+          -入	graphics/third_party/spirv_cross/spirv_parser.hpp
+          -入	graphics/tools/direct/compiler/Sha256.cs
+          -入	graphics/tools/direct/dsh
+          -入	graphics/track/glue.c
+          -入	graphics/track/s2a_track.h
+          -入	graphics/track/track.c
+          -入	graphics/widen/CameraTrack.cs
+          -入	graphics/widen/CbufShadow.cs
+          -入	graphics/widen/S2Arm.Gfx.Widen.csproj
+          -入	graphics/widen/SpirvCbufUseText.cs
+          -入	graphics/widen/WidenFrame.cs
+          -入	graphics/widen/WidenRewriter.cs
+          -入	graphics/widen/WidenSession.cs
+          -入	graphics/widen/export
+          -入	graphics/widen/gal
+          -入	graphics/widen/scan/yaz0enc.c
+          -入	graphics/widen/shader
+          -入	runtime/build.mk
+          -入	runtime/include
+          +入	NOTICE
+          +入	README.md
+          +入	README.zh-CN.md
+          +入	SECURITY.md
+          +入	THIRD_PARTY_LICENSES.md
+          +入	android
+          +入	compat
+          +入	docs
+          +入	graphics
+           入	ios
+          -入	runtime/ns2pro/LICENSE
+          -入	runtime/ns2pro/NS2Accessories.c
+          -入	runtime/ns2pro/NS2Input.c
+          -入	runtime/ns2pro/NS2JoyCon.c
+          -入	runtime/ns2pro/NS2Module.m
+          -入	runtime/ns2pro/NS2Motion.c
+          -入	runtime/ns2pro/NS2Rumble.c
+          -入	runtime/ns2pro/NS2Telemetry.c
+          -入	runtime/ns2pro/NS2Transport.m
+          -入	runtime/ns2pro/include
+          -入	runtime/src
+          -入	runtime/tests/mk
+          -入	pack/app.entitlements
+          -入	pack/app_bundle.py
+          -入	pack/container_custom.py
+          -入	pack/contracts/artifact.v2.schema.json
+          -入	pack/contracts/compare.py
+          -入	pack/contracts/job-event.v1.schema.json
+          -入	pack/contracts/job-request.v1.schema.json
+          -入	pack/contracts/target.v1.schema.json
+          -入	pack/contracts/validate.py
+          -入	pack/display_name.py
+          -入	pack/pkg_srcs.py
+          -入	pack/shell/manifest.py
+          -入	pack/shell_build.sh
+          -入	pack/ship_ext.py
+          -入	pack/stage_inputs/shell.tsv
+          -入	android/tools/fetch_source.sh
+          -入	platform/apple/cs
+          +入	launchers
+          +入	macos
+          +入	nuget.config
+          +入	pack
+          +入	platform
+          +入	ruff.toml
+          +入	runtime
+          +入	services
+           入	shell
+          -入	launchers/shared/SaveSync
+          -入	platform/apple/plat_apple.c
+          -入	platform/build.mk
+          -入	launchers/macos/build.mk
+          -入	platform/plat.h
+          -入	platform/plat_asm.h
+          -入	compat
+          -入	services/S2A.Services
+          -入	services/aot
+          -入	services/build.mk
+          -入	services/dav1d
+          -入	services/nuget.config
+          -入	services/nxaot.sh
+          -入	services/opus
+          -入	services/prebuilt_lib.sh
+          -入	services/vpx
+          -入	tests/autoplay/ap_default.h
+          -入	tests/autoplay/autoplay.c
+          -入	tests/autoplay/autoplay_host.h
+          -入	tests/autoplay/t_autoplay.c
+          -入	tests/build.mk
+          -入	tests/visual/build.mk
+          -入	tests/visual/galrec
+          -入	tools/bin/timeout
+          -入	tools/build.mk
+          -入	tools/module_order.py
+          -入	tools/nospace.sh
+          -入	tools/toolchain.env
+          -入	tools/weak_link_decl.py
+          -外	.gitignore	出壳过程里 git 命令读的忽略规则，不影响壳内容
+          -外	nuget.config	根目录的 NuGet 源配置，包版本由各工程钉死，不影响壳内容
+          -外	tools/gmake.sh	出壳挑 GNU Make 4 的路径（开发机工具），不影响壳内容
+          -
+          -# 「不」= 不编进壳（pack/shell/closure.py csiblings 用：表里逐文件登记的目录下，C 系文件要么入 / 外、要么在这里写明不编进壳）。
+          -#   出壳闭包与壳编号都不认这一类；下面 25 个是 11-10 首次核对时的现状，v0.2.3 出壳闭包核过、出壳没读到它们。
+          -不	android/tools/direct_identity_host.c
+          -不	graphics/dsx/win_posix.h
+          -不	graphics/metal/tools/xc_bench.m
+          -不	graphics/third_party/spirv_cross/main.cpp
+          -不	graphics/third_party/spirv_cross/spirv_cpp.cpp
+          -不	graphics/third_party/spirv_cross/spirv_cpp.hpp
+          -不	graphics/third_party/spirv_cross/spirv_cross_util.cpp
+          -不	graphics/third_party/spirv_cross/spirv_cross_util.hpp
+          -不	graphics/third_party/spirv_cross/spirv_hlsl.cpp
+          -不	graphics/third_party/spirv_cross/spirv_hlsl.hpp
+          -不	graphics/third_party/spirv_cross/spirv_reflect.cpp
+          -不	graphics/third_party/spirv_cross/spirv_reflect.hpp
+          -不	graphics/track/track_platform.h
+          -不	tests/det_host_queue.c
+          -不	tests/det_mring_wrap.c
+          -不	tests/fit_judge_test.c
+          -不	tests/loader_jumpslot.c
+          -不	tests/loader_order.c
+          -不	tests/loader_ro_lookup.c
+          -不	tests/rewrite_redzone_exec.c
+          -不	tests/rewrite_signed_jt_exec.c
+          -不	tests/rewriter_api_test.c
+          -不	tests/sync_contract_litmus.c
+          -不	tests/sync_publish_litmus.c
+          -不	tools/pipeline_timing.m
+          +入	skills
+          +入	tests
+          +入	tools
+          +入	translator
           diff --git a/runtime/tests/mk/nvn_pkg_gpu_write.mk b/runtime/tests/mk/nvn_pkg_gpu_write.mk
           index 558017c..a11080c 100644
           --- a/runtime/tests/mk/nvn_pkg_gpu_write.mk
@@ -448,9 +721,9 @@ jobs:
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/gfx/nvn/nvn_rscale.inc' 'graphics/nvn/gfx/nvn/nvn_rscale_ops.inc' 'graphics/nvn/tests/rscale_math_probe.py' 'graphics/nvn/tests/t_nvn_pkg_gpu_write.m' 'graphics/nvn/tests/t_nvn_rscale.m' 'runtime/tests/mk/nvn_pkg_gpu_write.mk' 'runtime/tests/mk/nvn_rscale.mk'
+          git add -- 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/gfx/nvn/nvn_rscale.inc' 'graphics/nvn/gfx/nvn/nvn_rscale_ops.inc' 'graphics/nvn/tests/rscale_math_probe.py' 'graphics/nvn/tests/t_nvn_pkg_gpu_write.m' 'graphics/nvn/tests/t_nvn_rscale.m' 'pack/stage_inputs/shell.tsv' 'runtime/tests/mk/nvn_pkg_gpu_write.mk' 'runtime/tests/mk/nvn_rscale.mk'
           tree="$(git write-tree)"
-          test "$tree" = "26e93d45f214e522024a5ebd25fdf809445d27ff"
+          test "$tree" = "54eb1cdefcf9a752c3972db1e957daef1b6ad019"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
@@ -459,6 +732,8 @@ jobs:
           snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.2.9 experimental 2x; upstream 77b436b57b0739447a1db27718085d34840e9917')"
           git checkout -b s2arm-2x-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
+          python3 pack/shell/closure.py pyimports
+          python3 pack/shell/closure.py csiblings
           python3 graphics/nvn/tests/rscale_math_probe.py --cc clang 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/rscale-math.log"
 
       - name: Prepare Python dependencies and timezone sources

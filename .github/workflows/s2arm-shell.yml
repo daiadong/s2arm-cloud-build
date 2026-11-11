@@ -59,7 +59,7 @@ jobs:
       - name: Install build tools
         run: |
           set -euo pipefail
-          brew install bash make cmake meson ninja coreutils pkgconf
+          brew install bash make cmake meson ninja coreutils pkgconf ripgrep
           mkdir -p "$RUNNER_TEMP/s2arm-bin"
           ln -s "$(brew --prefix coreutils)/bin/gtimeout" "$RUNNER_TEMP/s2arm-bin/timeout"
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
@@ -122,9 +122,9 @@ jobs:
           test -s "$output/Shell/root/S2Arm"
           python3 pack/shell/manifest.py verify --root "$output/Shell/root" --manifest "$output/Shell/manifest.json"
           python3 -m json.tool "$output/Shell/manifest.json" > "$output/artifact/manifest.json"
-          # The upstream Shell intentionally signs only the executable.
-          # Whole-bundle signing is performed later by the sideloading tool.
-          codesign --verify "$output/Shell/root/S2Arm"
+          # Shell is an unsigned bundle template. Upstream signs the standalone
+          # executable outside the bundle and seals the file manifest above.
+          # Final app signing belongs to the sideloading stage, after assembly.
           {
             echo "Baseline: original S2Arm 0.2.9; no 2x patch"
             echo "Source: https://github.com/jhaizhou-ops/S2Arm"

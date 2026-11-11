@@ -1,7 +1,8 @@
 # Add this file to YOUR repository at .github/workflows/s2arm-shell.yml.
 # Experimental 2x rendering on pinned S2Arm 0.2.9; default remains 1x.
 # Self-contained: the patch and matching-source packaging are included below.
-# Revision 2: all committed source roots enter the Shell input identity; closure checks stay enabled.
+# Revision 3: usage-based render-target scaling, first-access fallback and session reset.
+# Full source identity / closure checks stay enabled; GPU execution is recorded separately.
 name: S2Arm Shell 2x (macOS)
 
 on:
@@ -101,17 +102,101 @@ jobs:
             dotnet --info
           } 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/environment.txt"
 
-      - name: Apply reviewed 2x patch and check production scalar helpers
+      - name: Apply reviewed 2x patch and check production CPU policies
         working-directory: source
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "77b436b57b0739447a1db27718085d34840e9917"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
+          diff --git a/docs/superpowers/plans/2026-11-12-render-scale.md b/docs/superpowers/plans/2026-11-12-render-scale.md
+          new file mode 100644
+          index 0000000..7555e61
+          --- /dev/null
+          +++ b/docs/superpowers/plans/2026-11-12-render-scale.md
+          @@ -0,0 +1,50 @@
+          +# Render Scale Implementation Plan
+          +
+          +> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+          +
+          +**Goal:** 让符合条件的 IMAGE / DISPLAY 渲染目标实际按设置缩放，首次不支持的访问之前回退，保持原比例。
+          +**Architecture:** 复用 `rs_rts`、`rs_rescale` 和 S2Arm 的精确 shader 倍率表；新增编码前用途预检查；会话切换清理所有缩放缓存。
+          +**Tech Stack:** Objective-C / Metal、C、Python、GitHub Actions macOS。
+          +**Spec:** `docs/superpowers/specs/2026-11-12-render-scale-design.md`
+          +
+          +## Global Constraints
+          +
+          +- 1x 保持原路径；禁止游戏 ID / 地址专用分支；不更改 shader ABI。
+          +- Windows 不能运行 Metal；运行结果与待验证项必须分开记录。
+          +- 保留游戏资源、原打包器、原 IPA；只更新开发分支和可直接编辑的 YAML，更新前备份。
+          +
+          +## Review Focus
+          +
+          +- 首次 image 写入发生在第一次缩放之前：必须阻止紧随其后的目标提升。
+          +- 已打开的渲染遍、延迟清除、几何/曲面路径：回退必须在本次编码前生效。
+          +- 多个纹理、动态句柄数组与间接 IMAGE：不能遗漏首次访问或因固定队列上限继续使用错误尺寸。
+          +- sRGB / linear 视图、CPU 重传和同遍深度：替换存储后所有引用与内容必须一致。
+          +- 游戏会话 2→1→2：倍率、支持缓冲地址和待回退引用不得跨局复用。
+          +
+          +### Task 1: 重现并修复候选判定
+          +
+          +**Files:** `graphics/nvn/gfx/nvn/nvn_rscale.inc`，`graphics/nvn/tests/rscale_policy_probe.py`，`graphics/nvn/tests/t_nvn_rscale.m`。
+          +**Interfaces:** 继续通过 `rs_eligible` 判定；生产 C 探针直接执行该判定的旗标部分。
+          +- [x] 增加 IMAGE|COMPRESSIBLE、DISPLAY、线性拒绝等字面期望，并保存旧代码失败输出。
+          +- [x] 修改候选标志规则，保留尺寸/格式等筛选；补 GPU IMAGE 与 DISPLAY 目标及内容测试。
+          +- [x] 执行 CPU 探针和原有标量测试，记录 GPU 待运行；保留负对照。
+          +
+          +### Task 2: 首次访问前回退与会话清理
+          +
+          +**Files:** `graphics/nvn/gfx/nvn/nvn_rscale_ops.inc`，`nvn_mtl.m`，`nvn_session.inc`，相应测试。
+          +**Interfaces:** draw/dispatch 调用预检查，使用真实绑定与 `NvShader` 精确性信息；缩放记录仍为 NONE/SCALED/BLACK。
+          +- [x] 写先写后画、先画后写、只读 IMAGE 与不精确 shader 等行为判据；增加会话重置判据。
+          +- [x] 在正常及替代 draw 路径、compute 编码之前处理不支持的访问。支持缓冲与使用判定共用精确性约束。
+          +- [x] 清理会话倍率、队列、日志计数和支持缓冲缓存。
+          +- [x] 跑可用测试与负对照；补充 GPU 回归，说明所有未测条件。
+          +
+          +### Task 3: 审查与 CI 交付
+          +
+          +**Files:** `docs/坑记录.md`，本机 `make_2x_workflow.py`，`s2arm-shell.yml`。
+          +**Interfaces:** 自包含 patch + matching source bundle，保留原始 0.2.9 基线与输入闭包检查。
+          +- [x] 独立代码审查并修复重要问题（几何递归 lane 与合法 ID 0；复核无新增重要项）。
+          +- [ ] 按允许列表提交本地分支，运行可用门禁，记录 Windows 限制。
+          +- [ ] 更新生成器，加入 CPU / Metal 回归步骤并生成 YAML；临时干净索引验证内嵌 patch 和源码树。
+          +- [ ] 备份并更新用户可直接编辑的 YAML，输出检查记录及云端构建/手机验收步骤。
+          +
+          +**本地验证界限：** CPU 判据和四类负对照已运行；Metal 编译 / GPU / iPhone 尚未运行。CI 必须先编译原生测试，实际检测无 Metal device 时显式记录 SKIPPED，不能记 GPU 通过。有设备时测试失败阻止出壳。Task 3 的生成和回放发生在提交源码之后，结果另存本机验证报告。
+          diff --git a/docs/superpowers/specs/2026-11-12-render-scale-design.md b/docs/superpowers/specs/2026-11-12-render-scale-design.md
+          new file mode 100644
+          index 0000000..7880d3a
+          --- /dev/null
+          +++ b/docs/superpowers/specs/2026-11-12-render-scale-design.md
+          @@ -0,0 +1,22 @@
+          +# 内部渲染倍率的用途判定修复
+          +
+          +用户已确认开始实施：iPhone 上选择 2x 后实际增大可缩放的 3D 渲染目标，保持原始画幅，不开启宽屏、不拉伸；沿用 Windows 组装及 macOS CI 出壳。
+          +
+          +已验证的问题：设置 2 已传入 NVN，但 `COMPRESSIBLE | IMAGE` 的颜色/深度目标被 `rs_eligible` 一律拒绝；旧补丁仅解除倍率上限。另有同进程重启游戏后 `g_rs` 缓存未重置的问题。
+          +
+          +## Approaches
+          +
+          +- 只删除 IMAGE 排除：首次不支持的 shader 访问可能在回退前就使用放大存储，不采用。
+          +- 改写各游戏的尺寸初始化：需要逐引擎适配，不符合本次通用渲染修复范围。
+          +- 采用 nxnative PR #1716 的用途判定思想，接入 S2Arm 现有缩放与精确性元数据：本次采用。保留既有 shader ABI，不能整段移植另一套支持缓冲布局。
+          +
+          +## 边界
+          +
+          +- 在现有独立 `codex/metal-2x` 开发副本实施，不修改用户安装目录、游戏数据或已组装 IPA。
+          +- IMAGE 是能力标志，不等于写入；允许 IMAGE 渲染目标，实际 shader 写入/原子访问必须在编码之前恢复原尺寸。没有精确坐标元数据的访问继续保守回退。
+          +- 允许符合原有形状/格式限制的 DISPLAY 渲染目标，使高分辨率结果保留到出图；线性、稀疏、视频、MSAA 等限制仍保留。
+          +- 保持原有按目标首次渲染时扩大机制、完整内容复制、别名和同遍附件一致性；CPU 数据不因放大丢失。
+          +- 加入会话重置与支持缓冲失效处理；1x 不走新路径。
+          +- 先执行可在 Windows 运行的生产 C 判据，补充 Metal 合成测试及 CI 执行步骤。没有 GPU/真机证据时只报告补丁和本地检查结果，不声称画质已修好。
+          +
+          +参考：https://github.com/seedds/nxnative/pull/1716 （18d6abacbfc9295ce5d33f0f9f6afdb8b8885f88，未合入、无 iPhone 实测）；Ryujinx `TextureCache.IsUpscaleCompatible` / `TextureBindingsManager.UpdateScale`。
           diff --git a/docs/坑记录.md b/docs/坑记录.md
-          index 438051d..2a160c9 100644
+          index 438051d..7e84607 100644
           --- a/docs/坑记录.md
           +++ b/docs/坑记录.md
-          @@ -1481,3 +1481,19 @@ Apple 芯片 Mac（macOS 27.2、Python 3.12.16），以 `9749debe` 为基线，
+          @@ -1481,3 +1481,29 @@ Apple 芯片 Mac（macOS 27.2、Python 3.12.16），以 `9749debe` 为基线，
            **实验数据（期望 → 真结果）**：debian:trixie-slim arm64 容器、基线 `10c0a025`。只装 `libvulkan1 mesa-vulkan-drivers` → `cannot find -lvulkan` 链接红；补装 `libvulkan-dev` → lavapipe（llvmpipe，LLVM 19.1.7）起来，`nvn_vk_readback_gpu_test` 22 checks 0 failed、`nvn_vk_frame_tsv_test` 14 checks 0 failed。
            
            **做法**：容器里跑要 `-lvulkan` 链接或 lavapipe 执行的宿主测试，apt 三件套一起装：`libvulkan1 libvulkan-dev mesa-vulkan-drivers`。
@@ -131,8 +216,18 @@ jobs:
           +**机制与做法**：访问时间观察覆盖了精简依赖表之外的文件。此私有构建改用保守的完整源码输入声明：35 个根文件 / 目录全部记「入」，任何已提交文件变化都进入 Shell 编号，接受文档变化也需重出壳的代价。没有把未知依赖记成无关、关闭检查或改用仅建议模式；仍核闭包、产物内容与配套源码身份。仅适用于此固定源码云构建，不声称是上游最小依赖表。
           +
           +**实验数据（期望 → 真结果）**：Windows 控制访问时间的生产 checker 测试（非 APFS 读取者复现）：模拟三个已报告路径与两个原有输入，旧表期望放行 → 退出 1 点名三个路径；新表 → 退出 0。再加入未声明的新根文件 → 退出 1；不是无条件放行。新表覆盖全部已跟踪源码。实际 macOS 出壳收尾仍待新工作流验证。
+          +
+          +## 私有 2x 试验：IMAGE 能力标记拒绝目标、首次访问回退与会话倍率缓存
+          +
+          +**现象与根因**：iPhone18,2 / iOS 26.5.2，源码快照 `242a5c917` 的用户诊断，UI 与后端均报告 2，首个 2x 游戏会话的 5776 条上屏来源记录仍为 1280×720。筛选日志显示 960×540 的颜色 / 深度目标（标志 0xc，COMPRESSIBLE|IMAGE）因 IMAGE 被拒绝；没有「存储缩放到」记录。这些是阶段记录，不等于唯一帧数。上限修订没有覆盖候选规则；静态 `g_rs` 也没有在游戏会话退出时重置。
+          +
+          +**做法**：参考 nxnative PR #1716 的按实际用途判定思路（该 PR 未合并，不作为真机成功证据），候选允许 IMAGE、DISPLAY 及符合条件的深度目标，继续拒绝线性、视频、稀疏与不支持的格式 / 尺寸。使用 S2Arm 既有双轴倍率 ABI：精确片元只读图像可缩放；图像写入、原子、非片元或没有精确映射的访问，在编码前处理根存储，先落地旧遍的清除再退回。合法 ID 0 和动态池纳入预检查；几何合成绘制跳过重复预检查，避免在 lane 2 flush 自己的绘制段。会话结束清理倍率、队列和支持缓冲代号。未改变宽屏策略、着色器 ABI 或资源格式。
+          +
+          +**实验数据（期望 → 真结果）**：2026-11-12 Windows x64 / GCC，在 `09fe7c2` 上修改。生产 C 旗标判据 10 项：旧代码期望放行 IMAGE 颜色 / 深度、DISPLAY 及无压缩标记深度 → 四项失败；修改后 10/10。访问判据 9 项：只读且有精确元数据的 IMAGE 期望保留缩放 → 旧规则拒绝；修改后 9/9。生产 draw 入口前缀四种开关 / 递归组合 → 4/4；移除递归保护后，对应判据失败。原标量 11 项加会话设定 2→1→2 → 全过；只移除设定缓存重置后中间值仍为 2，判据失败。四类负对照均在隔离副本执行并恢复后复绿，不修改生产树。
+          +
+          +**射程**：CPU 探针只覆盖实际提取的标量、旗标、访问判断和 draw 入口前缀。新增 Metal 用例覆盖 IMAGE 同遍颜色 / 深度、DISPLAY、首次访问前回退、打开的渲染遍、40 个计算绑定、ID 0、sRGB 视图及真实会话切换，但本机没有运行其编译或 GPU 测试；完整几何流水线、翻译器与 iPhone 游戏画面仍待验证。用途回退可能让某些游戏继续保持原尺寸，不能仅凭这些 CPU 读数宣称游戏已实现 2x。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          index ea5e117..1f596c2 100644
+          index ea5e117..f8d1b57 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
           +++ b/graphics/nvn/gfx/nvn/nvn_mtl.m
           @@ -4166,9 +4166,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
@@ -155,17 +250,109 @@ jobs:
                if (why) {   // registered as widenable because the widened drawing fits (see tex_widen_why): drawn at its own width, a viewport past it is a red line (draw)
                    { static uint64_t seen[32]; static int ns; int k = 0; while (k < ns && seen[k] != t->serial) k++;   // one line per storage, with the reason
                      if (k == ns && ns < 32) { seen[ns++] = t->serial; MLOG("widen: render target ser=%llu %lux%lu storage not widened (%s): drawn at its own width; a viewport past it is a red line", (unsigned long long)t->serial, (unsigned long)base.width, (unsigned long)base.height, why); } }
+          @@ -9706,7 +9707,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+                           int tid = ubo_tex_id(ubo_handle(nvn_stage, reg, 8 * k)); if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) tid = -1;   // as for the samplers: other data, not a handle
+                           void *tv = NULL; uint64_t trid = tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+                           if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }   // a handle the shader does not pick here may be another kind
+          -                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; } else { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, 1); }   // internal resolution: arrays of handles are not scaled
+          +                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; } else { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, b); }   // internal resolution: arrays of handles are not scaled
+                           if (bl && tid >= 0) PD("B %llu st%d texu [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
+                           slots[aid + k] = trid;
+                           USE(t, MTLResourceUsageRead);
+          @@ -9750,7 +9751,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+                       if (t && b->dpf == NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != NVN_DPF_FLOAT) { uint64_t r2 = 0; id<MTLTexture> v = tex_float_fit(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_float_fit
+                       if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_alpha_red(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_alpha_red
+                       size_abi_texture(sh, nvn_stage, b, tid, size_view, t);
+          -            rs_bind_check(t, sh, nvn_stage, 0);   // S2Arm internal resolution: read where scaling is not supported → back to 1 at the next safe point
+          +            rs_bind_check(t, sh, nvn_stage, b);   // S2Arm internal resolution: read where scaling is not supported → back to 1 at the next safe point
+                       if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; }
+                       slots[aid] = trid;
+                       USE(t, MTLResourceUsageRead);
+          @@ -9775,7 +9776,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+                       if (t && b->rw && tid < g_ntreg && g_treg[tid].ok) gpw_mark_view(&g_treg[tid].t, &g_treg[tid].v, g_treg[tid].has_v, 1);   // the shader stores to it: its guest bytes go stale (gpw_mark; a load-only image is not)
+                       if (t && b->rw && tid < g_ntreg && g_treg[tid].ok) wd_flat_written(g_treg[tid].t.serial);   // S2Arm widen: its content changes, so the horizontal-detail measurement no longer holds
+                       size_abi_texture(sh, nvn_stage, b, tid, size_view, t);
+          -            rs_bind_check(t, sh, nvn_stage, 2);   // S2Arm internal resolution
+          +            rs_bind_check(t, sh, nvn_stage, b);   // S2Arm internal resolution
+                       if (!t) { t = dummy_img(b->dtt, b->dpf, b->atomic_image); trid = t.gpuResourceID._impl; }   // Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
+                       slots[aid] = trid;
+                       USE(t, MTLResourceUsageRead | MTLResourceUsageWrite);
+          @@ -9815,7 +9816,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+                               if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; }
+                           }
+                           if (bl && tv) PD("B %llu st%d texd [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
+          -                if (tv && trid && trid != g_dummy_tbuf_rid[b->dpf & 3] && trid != g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]) { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, 1); }   // internal resolution: arrays of handles are not scaled
+          +                if (tv && trid && trid != g_dummy_tbuf_rid[b->dpf & 3] && trid != g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]) { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, b); }   // internal resolution: arrays of handles are not scaled
+                           slots[aid + k] = trid;
+                           USE(t, MTLResourceUsageRead);
+                       }
+          @@ -9832,7 +9833,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+                           int tid = (int)(c2_handle(nvn_stage, b->off + 8u * k) & 0xfffff);
+                           void *tv = NULL; uint64_t trid = tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+                           if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }   // an element the shader does not pick here may be another kind
+          -                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; } else { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, 1); }   // internal resolution: arrays of handles are not scaled
+          +                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; } else { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, b); }   // internal resolution: arrays of handles are not scaled
+                           if (bl && tv) PD("B %llu st%d texa [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
+                           slots[aid + k] = trid;
+                           USE(t, MTLResourceUsageRead);
+          @@ -13117,6 +13118,11 @@ static int gmem_uses(NvShader *s) {
+           static void gmem_count_draw(NvProg *pr) { g_gmem_draws_all++; for (int i = 0; i < 5; i++) if (gmem_uses(pr->sh[i])) { g_gmem_draws++; break; } }
+           
+           static void draw(const p_draw *dw, const p_draw_idx *di) {
+          +    if (rs_on() && !g_geo_program) {   // Only the outer draw: geo_draw's synthetic raster draw is already checked and may run inside lane 2.
+          +        geo_run_flush();
+          +        NvProg *pr = S.prog ? prog_get(S.prog) : nil;
+          +        if (!rs_pre_program(pr)) return;
+          +    }
+               if (dw && dw->prim == DM_PRIM_MESH_TASKS && !g_mtk.on) { mesh_tasks_draw(dw); return; }   // NVN2 task / mesh draw: binds its stages and comes back with its pixel stage (nvn_geometry.inc)
+               g_udc_precise = 0;   // only this draw's own udc_note_draw may cover its encode (a draw that returned without encoding leaves no stale cover)
+               g_udc_lmap = NULL; g_udc_fsfn = 0;   // the output map is this draw's own too: the one a previous (on-chip read / merged) draw used must not judge the next pass's lookahead (pass_color_unwritten) or a geometry / tessellation draw's writes (11-06 TotK: tiled lights black outside the lit tiles)
+          @@ -13564,10 +13570,10 @@ static void dispatch(const p_dispatch *dp) {
+                   mtl_sub_fill(u->addr + at, 4, cs->rf.first[i].value);
+               }
+               if (g_nubd && ubd_conflict_cs(cs, dp->ind)) { g_ubd_conflicts++; ubd_land(); }   // see ubd_conflict_cs
+          +    if (!rs_pre_shader(cs, 5)) return;   // Resolve every unsupported access before an encoder or atomic upgrade.
+               if (!img_atomic_prepare(cs, 5)) return;
+               img_wr_prescan(cs, 5); if (g_imwr_npend) img_wr_upgrade();   // image textures made without shader writes: upgraded before this dispatch's encoder opens (img_wr_note)
+               rp_flush();   // a full clear with no draw after it waits for the next pass on its targets, but it comes before this dispatch, which may read or write them as images: land it first, as copy_t2t does (upstream reference implementation, MIT)
+          -    rs_pre_compute(cs);   // S2Arm internal resolution: scaled textures this dispatch reads / writes go back to 1 first (nvn_rscale_ops.inc)
+               tba_prepare(cs, nil, nil, nil, nil, 1);   // #309: as for draws (see tba_ent)
+               uint32_t gx = (uint32_t)dp->x, gy = (uint32_t)dp->y; wd_dispatch(cs, &gx, &gy, dp->ind != 0);   // S2Arm widen: images it writes widened, X groups to the widened width, compute constants rewritten (widen_glue.inc)
+               int own = dispatch_own();
+          @@ -15473,7 +15479,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+               // S2Arm: a crop reaching past the source (10-28 Splatoon 3 direct full screen: the game sets a 2346x1080 crop for a few frames while the swap chain texture is still
+               //   1920x1080) is shown as the part inside the source, 16:9 with black bars (pf_crop_fit), instead of dropping the frame with "present crop out of bounds";
+               //   once the source covers the crop it is used as given again. Everything below (present, grab, screenshots, fit check, AA) takes the fitted crop
+          -    int rsc[4]; if (crop && rs_state(src) == RS_SCALED) {   // S2Arm internal resolution: a scaled present source (none expected: display textures are never scaled) takes the crop in storage texels
+          +    int rsc[4]; if (crop && rs_state(src) == RS_SCALED) {   // S2Arm internal resolution: a scaled present source (including eligible display targets) takes the crop in storage texels
+                   long x = crop[0], y = crop[1], w = crop[2], h = crop[3]; if (!w && !h) { w = (long)rs_cw(src); h = (long)rs_ch(src); }
+                   rs_rect(g_rs, &x, &y, &w, &h); rsc[0] = (int)x; rsc[1] = (int)y; rsc[2] = (int)w; rsc[3] = (int)h; crop = rsc; }
+               int fitted[4]; int fit_rc = pf_crop_fit(crop, src.width, src.height, fitted);
           diff --git a/graphics/nvn/gfx/nvn/nvn_rscale.inc b/graphics/nvn/gfx/nvn/nvn_rscale.inc
-          index 75a210e..c2a45de 100644
+          index 75a210e..47a6dfa 100644
           --- a/graphics/nvn/gfx/nvn/nvn_rscale.inc
           +++ b/graphics/nvn/gfx/nvn/nvn_rscale.inc
-          @@ -1,4 +1,4 @@
+          @@ -1,29 +1,31 @@
           -// S2Arm 内部分辨率（S2A_RES_SCALE < 1，10-30 帧率能耗线；语义照 Ryujinx 分辨率缩放，MIT）：可缩的渲染目标的 Metal 存储按比例 s 缩小，游戏看不见（贴图查询、
           +// S2Arm 内部分辨率（S2A_RES_SCALE 0.25–2；语义照 Ryujinx 分辨率缩放，MIT）：可缩放的渲染目标的 Metal 存储按比例 s 缩放，游戏看不见（贴图查询、
            //   游戏常量、游戏坐标都是原尺寸），换算只在回放层碰 Metal 的地方做：视口 / 裁剪 / 清除区域、片元坐标与取图倍率（支持缓冲 render_scale / render_scale_y）、
            //   拷贝区域、CPU 读写、上屏裁剪。比例为 1（缺省）时这里每个入口第一句就返回，行为与没有本文件时逐字节相同。
            // 单位：游戏坐标 →（宽屏层换算）→ 画布坐标 →（× s）→ 存储坐标。画布 = 不缩时这张存储该有的尺寸（宽屏放宽过的就是放宽尺寸），存储 = ⌈画布 × s⌉（Ryujinx GetCreateInfo 取整）。
-          @@ -15,15 +15,15 @@ static double g_rs = -1;   // 设定比例（S2A_RES_SCALE；1 = 关）
+           // 哪些存储缩（rs_eligible，同 Ryujinx IsUpscaleCompatible + UpscaleSafeMode，再加直连自己的条件）：
+          -//   - 游戏标了可压缩（NVN 给渲染目标的标志）、没标上屏 / 视频解码 / 存储图像 / 线性 / 稀疏；二维、二维数组、矩形（不缩多重采样：缩放拷贝画不了它）；
+          +//   - 可压缩 / 上屏 / 深度目标，没标视频解码 / 线性 / 稀疏；IMAGE 只是能力，实际不支持的访问在编码之前由 rs_pre_shader 处理；二维、二维数组、矩形（不缩多重采样）；
+           //   - 缩放拷贝两个方向都画得了的格式（copy_t2t_draw：浮点 / 归一化颜色、D32F、D32F+S8；不缩整数格式和 D16）；不是随包 / 缓冲 / 视图 / 压缩 / 3D（tex_widen_why）；
+           //   - Ryujinx 安全尺寸：级数 ≤ 3、宽高 ≥ 8、非深度且多通道的不缩方形、高 < 360 的 16:9 不缩（模糊 / 泛光）、宽 = 高² 的不缩（二维当三维的查色表）。
+           // 什么时候缩：第一次当渲染目标时（rs_rts，开遍前；同 Ryujinx「可缩 → 当目标时缩」），同一遍的附件比例一致：有一个不可缩 / 被拉黑，全遍退回 1。
+          -// 退回原尺寸（拉黑，Ryujinx BlacklistScale）：缩放图被顶点 / 计算阶段读、被存储图像槽绑、被句柄数组读、被不精确的片元着色器（scale_exact ≠ 1）读、
+          -//   被缓冲 → 贴图拷贝写（CPU 写入：Ryujinx 部分写入即拉黑）、当多重采样解析的目标。前三类是绑定时发现的，记进待办，下一个安全点（开遍前 / 派发前）就换回原尺寸存储。
+          +// 退回原尺寸（拉黑，Ryujinx BlacklistScale）：顶点 / 计算阶段访问、图像写入、缺少倍率元数据的图像读取、间接句柄、非精确片元读取，
+          +//   都在绘制 / 派发编码前处理；精确片元的只读图像可以保留缩放。缓冲 → 贴图写入（Ryujinx 部分写入即拉黑）及多重采样解析目标也退回。
+           #import <objc/runtime.h>
+           
+           static double g_rs = -1;   // 设定比例（S2A_RES_SCALE；1 = 关）
+          +static uint64_t g_rs_epoch;   // 支持缓冲地址只在同一游戏会话有效
+          +static void rs_reset_setting(void) { g_rs = -1; g_rs_epoch++; }
            static double rs_setting(void) {
                if (g_rs < 0) {
                    const char *e = getenv("S2A_RES_SCALE"); double v = e && *e ? atof(e) : 1.0;
@@ -185,7 +372,7 @@ jobs:
            
            // 每份存储的缩放记录挂在 Metal 根贴图上（关联对象：存储释放时一起走，地址复用不会认错）
            enum { RS_NONE = 0, RS_SCALED = 1, RS_BLACK = 2 };
-          @@ -51,6 +51,8 @@ static void rs_canvas(id<MTLTexture> t, NSUInteger level, NSUInteger *w, NSUInte
+          @@ -51,6 +53,8 @@ static void rs_canvas(id<MTLTexture> t, NSUInteger level, NSUInteger *w, NSUInte
            static NSUInteger rs_cw(id<MTLTexture> t) { NSUInteger w, h; if (!t) return 0; rs_canvas(t, 0, &w, &h); return w; }
            static NSUInteger rs_ch(id<MTLTexture> t) { NSUInteger w, h; if (!t) return 0; rs_canvas(t, 0, &w, &h); return h; }
            static NSUInteger rs_up(NSUInteger v, double s) { NSUInteger r = (NSUInteger)ceil((double)v * s - 1e-9); return r ? r : 1; }   // Ryujinx：⌈v·s⌉
@@ -194,11 +381,35 @@ jobs:
            // 画布矩形 → 存储矩形（起点向下取整、终点向上取整，盖住画布矩形碰到的每个存储像素；同 Ryujinx 裁剪缩放）
            static void rs_rect(double s, long *x, long *y, long *w, long *h) {
                if (s == 1.0) return;
+          @@ -67,11 +71,11 @@ static int rs_one_comp(MTLPixelFormat f) {
+           // 这张贴图的存储能不能缩（见文件头）；why 给不能缩的原因（日志用）
+           static int rs_eligible(const tex_t *t, id<MTLTexture> base, const char **why) {
+               const char *w = NULL;
+          -    uint32_t bad = NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE | NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET;
+          +    uint32_t bad = NVN_TEXTURE_FLAGS_VIDEO_DECODE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET;
+               if (!t || !base) { if (why) *why = "没有存储"; return 0; }
+               MTLPixelFormat pf = base.pixelFormat; int depth = pf == MTLPixelFormatDepth32Float || pf == MTLPixelFormatDepth32Float_Stencil8;
+               NSUInteger gw = t->d.width, gh = t->d.height;
+          -    if (!(t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) || (t->d.flags & bad)) w = "标志（不可压缩 / 上屏 / 视频 / 存储图像 / 线性 / 稀疏）";
+          +    if ((!depth && !(t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_DISPLAY))) || (t->d.flags & bad)) w = "标志（非渲染目标 / 视频 / 线性 / 稀疏）";
+               else if (t->d.target != NVN_TEXTURE_TARGET_2D && t->d.target != NVN_TEXTURE_TARGET_2D_ARRAY && t->d.target != NVN_TEXTURE_TARGET_RECTANGLE) w = "类型（只缩二维 / 二维数组 / 矩形）";
+               else if (base.sampleCount > 1 || base.parentTexture || base.buffer) w = "多重采样 / 视图 / 缓冲";
+               else if (tex_widen_why(t)) w = tex_widen_why(t);
           diff --git a/graphics/nvn/gfx/nvn/nvn_rscale_ops.inc b/graphics/nvn/gfx/nvn/nvn_rscale_ops.inc
-          index a464d67..66c81bd 100644
+          index a464d67..79647cf 100644
           --- a/graphics/nvn/gfx/nvn/nvn_rscale_ops.inc
           +++ b/graphics/nvn/gfx/nvn/nvn_rscale_ops.inc
-          @@ -10,6 +10,11 @@ static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char
+          @@ -2,14 +2,20 @@
+           // 由 nvn_mtl.m 在 widen_glue.inc 之后 #include（要用回放层的 R / S / g_pass / arena_alloc 与宽屏胶水的 wd_tex_scales / g_wd_rs_gpu）。比例为 1 时每个入口第一句返回。
+           static int copy_t2t_draw(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsigned ss, unsigned dl, unsigned ds, const NVNcopyRegion *sr, const NVNcopyRegion *dr, int linear, int mirror);
+           static uint64_t g_rs_up, g_rs_down, g_rs_fail;   // 缩了 / 退回原尺寸 / 换存储失败的存储数（日志）
+          +static unsigned g_rs_skip, g_rs_block;
+           
+           // 把存储 base 换成按画布 × s（to_scaled）或画布原尺寸的新存储，内容用缩放拷贝带过去（Ryujinx SetScale：GetScaledHostTexture(copy) + ReplaceStorage），
+          -//   所有表里指向旧存储的项换成新的（tex_swap_storage）。只在没有开着的渲染遍时调（copy_t2t_draw 自己收遍）。失败 = 旧存储不动、记成不缩（以后不再试）。返回新存储
+          +//   所有表里指向旧存储的项换成新的（tex_swap_storage）。只在没有开着的渲染遍时调（copy_t2t_draw 自己收遍）。放大失败保留原尺寸；退回失败停止，不能把仍放大的存储冒充原尺寸。返回新存储
+           static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char *why) {
+               NvRsInfo *i = rs_info(base);
                NSUInteger cw = i && i->state == RS_SCALED ? i->cw : base.width, ch = i && i->state == RS_SCALED ? i->ch : base.height;
                NSUInteger w = to_scaled ? rs_up(cw, g_rs) : cw, h = to_scaled ? rs_up(ch, g_rs) : ch;
                if (w == base.width && h == base.height) { rs_set_info(base, to_scaled ? RS_SCALED : RS_BLACK, cw, ch); return base; }
@@ -210,7 +421,25 @@ jobs:
                MTLTextureDescriptor *d = [MTLTextureDescriptor new];
                d.textureType = base.textureType; d.pixelFormat = base.pixelFormat; d.width = w; d.height = h; d.depth = base.depth;
                d.arrayLength = base.arrayLength; d.mipmapLevelCount = base.mipmapLevelCount; d.sampleCount = base.sampleCount;
-          @@ -32,7 +37,7 @@ static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char
+          @@ -18,7 +24,8 @@ static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char
+               //   11-09 #312 暗黑地牢2：1280x720 RG11B10Float 颜色目标「缩放拷贝画不了，不缩」，同遍深度却缩了）
+               d.usage = base.usage | (mtl_fmt_block(base.pixelFormat) ? 0 : MTLTextureUsageRenderTarget);
+               id<MTLTexture> n = [g_dev newTextureWithDescriptor:d];
+          -    if (!n) { g_rs_fail++; RED_ONCE(114, "内部分辨率：%lux%lu 格式 %lu 的存储换成 %lux%lu 失败（建不出），不缩", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long)w, (unsigned long)h);
+          +    if (!n) { g_rs_fail++; if (!to_scaled) MDIE("内部分辨率：退回原尺寸分配失败；停止以免按游戏坐标访问缩放存储");
+          +        RED_ONCE(114, "内部分辨率：%lux%lu 格式 %lu 的存储换成 %lux%lu 失败（建不出），不缩", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat, (unsigned long)w, (unsigned long)h);
+                   rs_set_info(base, RS_BLACK, 0, 0); return nil; }
+               res_add(n);
+               for (NSUInteger l = 0; l < base.mipmapLevelCount; l++) {
+          @@ -26,17 +33,18 @@ static id<MTLTexture> rs_rescale(id<MTLTexture> base, int to_scaled, const char
+                   NVNcopyRegion dr = {0, 0, 0, (int)rs_mip(w, l), (int)rs_mip(h, l), (int)base.arrayLength};
+                   if (!copy_t2t_draw(base, n, (unsigned)l, 0, (unsigned)l, 0, &sr, &dr, 1, 0)) {
+                       g_rs_fail++; RED_ONCE(115, "内部分辨率：%lux%lu 格式 %lu 的缩放拷贝画不了，不缩（首例）", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat);
+          -            defer_obj_release(n); rs_set_info(base, RS_BLACK, 0, 0); return nil; }
+          +            defer_obj_release(n); if (!to_scaled) MDIE("内部分辨率：退回原尺寸拷贝失败；停止以免丢失缩放存储的内容");
+          +            rs_set_info(base, RS_BLACK, 0, 0); return nil; }
+               }
+               rs_set_info(n, to_scaled ? RS_SCALED : RS_BLACK, cw, ch);
                tex_swap_storage(base, n);
                uint64_t k = to_scaled ? g_rs_up++ : g_rs_down++;
                if (k < 12 || !(k & (k - 1))) MLOG("内部分辨率：存储 %lux%lu 格式 %lu %s %lux%lu（第 %llu 份%s%s）", (unsigned long)base.width, (unsigned long)base.height, (unsigned long)base.pixelFormat,
@@ -219,12 +448,272 @@ jobs:
                return n;
            }
            
+          -// 待退回队列：绑定时发现缩放图被不支持缩放的地方读写，下一个安全点（开遍前 rs_rts / 派发前 rs_pre_compute）换回原尺寸。根存储去重
+          +// 编码期补充检查的待退回队列，按根存储去重。正常路径由 rs_pre_shader 在编码前完成回退；不能依赖本队列修正已经编码的访问。
+           enum { RS_BADQ = 64 };
+           static __strong id<MTLTexture> g_rs_bad[RS_BADQ]; static const char *g_rs_bad_why[RS_BADQ]; static int g_rs_nbad; static pthread_mutex_t g_rs_mu = PTHREAD_MUTEX_INITIALIZER;
+           static void rs_bad(id<MTLTexture> t, const char *why) {
+          @@ -57,7 +65,7 @@ static void rs_flush(void) {
+           
+           // 开遍前（rp_begin_ex_，宽屏放宽之后）：本遍颜色 / 深度目标定比例。都可缩（或已缩）→ 没缩的缩；有一个不可缩 / 被拉黑 → 已缩的退回、没定的记不缩（Ryujinx：黑名单在目标间传播）
+           static void rs_note_skip(const tex_t *t, const char *why) {
+          -    static int n; if (n++ < 16) MLOG("内部分辨率：渲染目标 ser=%llu %ux%u 格式 %#x 标志 %#x 不缩（%s）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.flags, why ? why : "?");
+          +    if (g_rs_skip++ < 16) MLOG("内部分辨率：渲染目标 ser=%llu %ux%u 格式 %#x 标志 %#x 不缩（%s）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.flags, why ? why : "?");
+           }
+           static void rs_rts(void) {
+               if (!rs_on()) return;
+          @@ -94,41 +102,95 @@ static uint64_t rs_support_cpu(const NvShader *fs, const uint8_t **cpu) {
+               uint8_t ix[72]; float v[72], vy[72]; int n = fs && fs->exact == 1 && !fs->ts_lost ? wd_tex_scales_locked(fs, f, ix, v, fy, vy) : 0;
+               int any = f != f0 || fy != fy0; for (int i = 0; i < n; i++) any |= v[i] != 1.0f || vy[i] != 1.0f;
+               if (!any) { if (cpu) *cpu = wd ? g_wd_rs_data : support_buf().contents; return wd ? wd : support_gpu(); }
+          -    static uint64_t last_gpu, last_sub; static const uint8_t *last_data; static float lf, lfy, lv[72], lvy[72]; static uint8_t lix[72]; static int ln;
+          -    if (!(last_gpu && last_sub == g_arena_gen && lf == f && lfy == fy && ln == n && !memcmp(lix, ix, (size_t)n) && !memcmp(lv, v, sizeof *v * (size_t)n) && !memcmp(lvy, vy, sizeof *vy * (size_t)n))) {
+          +    static uint64_t last_gpu, last_sub, last_epoch; static const uint8_t *last_data; static float lf, lfy, lv[72], lvy[72]; static uint8_t lix[72]; static int ln;
+          +    if (!(last_gpu && last_epoch == g_rs_epoch && last_sub == g_arena_gen && lf == f && lfy == fy && ln == n && !memcmp(lix, ix, (size_t)n) && !memcmp(lv, v, sizeof *v * (size_t)n) && !memcmp(lvy, vy, sizeof *vy * (size_t)n))) {
+                   id<MTLBuffer> ab; size_t o = arena_alloc(4096, &ab); uint8_t *d = (uint8_t *)ab.contents + o;
+                   memcpy(d, support_buf().contents, 4096); memcpy(d + 192, &f, 4); memcpy(d + 1440, &fy, 4);   // render_scale[i] 在 192 + 16 i、render_scale_y[i] 在 1440 + 16 i（取 .x），同 wd_rscale
+                   for (int i = 0; i < n; i++) { memcpy(d + 192 + 16 * ix[i], &v[i], 4); memcpy(d + 1440 + 16 * ix[i], &vy[i], 4); }
+          -        last_gpu = ab.gpuAddress + o; last_data = d; last_sub = g_arena_gen; lf = f; lfy = fy; ln = n; memcpy(lix, ix, (size_t)n); memcpy(lv, v, sizeof *v * (size_t)n); memcpy(lvy, vy, sizeof *vy * (size_t)n);
+          +        last_gpu = ab.gpuAddress + o; last_data = d; last_sub = g_arena_gen; last_epoch = g_rs_epoch; lf = f; lfy = fy; ln = n; memcpy(lix, ix, (size_t)n); memcpy(lv, v, sizeof *v * (size_t)n); memcpy(lvy, vy, sizeof *vy * (size_t)n);
+               }
+               if (cpu) *cpu = last_data;
+               return last_gpu;
+           }
+           static uint64_t rs_support(const NvShader *fs) { return rs_support_cpu(fs, NULL); }
+          -// 绑定时：这张图在这里读写不支持缩放（顶点 / 计算等非片元阶段、不精确的片元着色器、句柄数组、存储图像槽）→ 记进待退回（只对已缩的起作用）
+          -static inline void rs_bind_check(id<MTLTexture> t, const NvShader *sh, int nvn_stage, int kind) {
+          +// IMAGE 是创建能力，是否能缩要看本次使用。只读片元 image 还须有这个槽位的精确倍率元数据。
+          +// 参考 nxnative PR #1716 的用途判定，使用本项目自己的 tex_scales / 双轴支持缓冲 ABI。
+          +static const char *rs_access_why(const NvShader *sh, int stage, const nvn_rbind *b) {
+          +    int image = b->kind == NVN_RB_IMG || b->kind == NVN_RB_IMGU || b->kind == NVN_RB_IMGA;
+          +    int dynamic = b->kind == NVN_RB_TEXU || b->kind == NVN_RB_TEXD || b->kind == NVN_RB_TEXA || b->kind == NVN_RB_TEXP;
+          +    if (!image && !dynamic && b->kind != NVN_RB_TEX) return NULL;
+          +    if (image && (b->rw || b->atomic_image || b->kind == NVN_RB_IMGA)) return "着色器写入存储图像";
+          +    if (dynamic || b->kind == NVN_RB_IMGU) return "间接句柄没有精确倍率映射";
+          +    if (stage != 1) return "非片元阶段访问";
+          +    if (sh->exact != 1 || sh->ts_lost || (sh->size_abi && !sh->size_exact)) return "片元取图倍率不精确";
+          +    if (image) {
+          +        for (int i = 0; i < sh->nts; i++) if (sh->ts[i].img && sh->ts[i].reg == b->reg) return NULL;
+          +        return "只读图像缺少该槽位的倍率元数据";
+          +    }
+          +    return NULL;
+          +}
+          +// 编码期的补充检查与编码前共用判定；主要回退必须由 rs_pre_shader 在第一次访问之前完成。
+          +static inline void rs_bind_check(id<MTLTexture> t, const NvShader *sh, int nvn_stage, const nvn_rbind *b) {
+               if (!t || !rs_on()) return;
+          -    if (kind == 2) rs_bad(t, "绑在存储图像槽");
+          -    else if (kind == 1) rs_bad(t, "被句柄数组读");
+          -    else if (nvn_stage != 1) rs_bad(t, "被顶点 / 计算等非片元阶段读");
+          -    else if (sh->exact != 1 || sh->ts_lost || (sh->size_abi && !sh->size_exact)) rs_bad(t, "被取图倍率不精确的片元着色器读");   // ABI2 非 exact（legacy_1x）同不精确
+          +    const char *why = rs_access_why(sh, nvn_stage, b); if (why) rs_bad(t, why);
+           }
+          -// 计算派发前（dispatch，此时没有开着的遍）：这次派发要读写的缩放图当场换回原尺寸，这次派发就读到对的（绑定时的检查只能等下一个安全点）
+          -static void rs_pre_compute(NvShader *sh) {
+          -    if (!rs_on() || !sh) return;
+          -    __strong id<MTLTexture> q[32]; int n = 0;
+          +
+          +// 调用方没有持 g_rmu。真实登记的根存储在第一次不支持的访问之前拉黑；NONE 也要记，防止这笔绘制随后 rs_rts 又把它放大。
+          +// 已缩放的先收遍（含尚未落地的 clear），重取当前存储，再复制回原尺寸；不在描述符锁内发 GPU 拷贝。
+          +static int rs_prepare_tid(int tid, const char *why) {
+          +    if (tid < 0) return 1;   // ID 0 can be a registered pool entry, as in tex_by_id / ubo_tex_id.
+          +    tex_t desc; id<MTLTexture> base = nil;
+               pthread_mutex_lock(&g_rmu);
+          -    for (int i = 0; i < sh->rf.nb && n < 32; i++) {
+          -        const nvn_rbind *b = &sh->rf.b[i]; int reg = b->reg, tid = 0;
+          -        if (b->kind == NVN_RB_TEX) tid = (int)(tex_slot_h(S.tex[5], S.img[5], reg) & 0xfffff);
+          -        else if (b->kind == NVN_RB_TEXU) tid = b->n ? ubo_tex_id(ubo_handle(5, reg, b->off)) : ubo_tex_id(ubo_packed(5, b));
+          -        else if (b->kind == NVN_RB_IMG || b->kind == NVN_RB_IMGU) tid = img_tid(b, 5);
+          -        else continue;
+          -        void *tv = NULL; if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) tex_fast_rid(tid, &tv);
+          -        id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+          -        if (t && rs_state(t) == RS_SCALED) q[n++] = rs_root(t);
+          +    if (tid < g_ntreg && g_treg[tid].ok && !g_treg[tid].gone) {
+          +        desc = g_treg[tid].t; void *tv = NULL; tex_fast_rid(tid, &tv); base = rs_root((__bridge id<MTLTexture>)tv);
+               }
+               pthread_mutex_unlock(&g_rmu);
+          -    for (int k = 0; k < n; k++) if (rs_state(q[k]) == RS_SCALED) rs_rescale(q[k], 0, "计算派发读写");
+          -    rs_flush();
+          +    if (!base || rs_state(base) == RS_BLACK) return 1;
+          +    if (rs_state(base) == RS_SCALED) {
+          +        rp_flush();
+          +        pthread_mutex_lock(&g_rmu); base = rs_root(tex_mtl(&desc)); pthread_mutex_unlock(&g_rmu);
+          +        if (base && rs_state(base) == RS_SCALED) return rs_rescale(base, 0, why) != nil;
+          +    }
+          +    if (base && rs_state(base) == RS_NONE) {
+          +        if (rs_eligible(&desc, base, NULL) && g_rs_block++ < 16)
+          +            MLOG("内部分辨率：访问前保留原尺寸 ser=%llu %ux%u（%s）", (unsigned long long)desc.serial, desc.d.width, desc.d.height, why);
+          +        rs_set_info(base, RS_BLACK, 0, 0);
+          +    }
+          +    return 1;
+          +}
+          +static int rs_pre_shader(NvShader *sh, int stage) {
+          +    if (!rs_on() || !sh) return 1;
+          +    for (int i = 0; i < sh->rf.nb; i++) {
+          +        const nvn_rbind *b = &sh->rf.b[i]; const char *why = rs_access_why(sh, stage, b); if (!why) continue;
+          +        if (b->kind == NVN_RB_TEXP) {   // shader 可选池中任一 ID；不能只查前 32 / 64 项
+          +            pthread_mutex_lock(&g_rmu); int limit = g_ntreg; pthread_mutex_unlock(&g_rmu);
+          +            for (int tid = 0; tid < limit; tid++) if (!rs_prepare_tid(tid, why)) return 0;
+          +            continue;
+          +        }
+          +        int count = (b->kind == NVN_RB_TEXU || b->kind == NVN_RB_TEXD || b->kind == NVN_RB_TEXA) && b->n ? b->n : 1;
+          +        for (int k = 0; k < count; k++) {
+          +            int tid = -1; pthread_mutex_lock(&g_rmu);
+          +            if (b->kind == NVN_RB_IMG || b->kind == NVN_RB_IMGU || b->kind == NVN_RB_IMGA) tid = img_tid(b, stage);
+          +            else if (b->kind == NVN_RB_TEX) tid = (int)(tex_slot_h(S.tex[stage], S.img[stage], b->reg) & 0xfffff);
+          +            else if (b->kind == NVN_RB_TEXU) tid = ubo_tex_id(b->n ? ubo_handle(stage, b->reg, 8 * k) : ubo_packed(stage, b));
+          +            else if (b->kind == NVN_RB_TEXA) tid = (int)(c2_handle(stage, b->off + 8u * k) & 0xfffff);
+          +            else if (b->kind == NVN_RB_TEXD && k < 128) tid = (int)((S.tex[stage][k] ? S.tex[stage][k] : S.tex[stage][NVN_SEPTEX_SLOT0 + k]) & 0xfffff);
+          +            pthread_mutex_unlock(&g_rmu);
+          +            if (!rs_prepare_tid(tid, why)) return 0;
+          +        }
+          +    }
+          +    return 1;
+          +}
+          +static int rs_pre_program(NvProg *pr) {
+          +    if (!rs_on() || !pr) return 1;
+          +    for (int stage = 0; stage < 6; stage++) if (!rs_pre_shader(pr->sh[stage], stage)) return 0;
+          +    return 1;
+          +}
+          +// shutdown 已排空所有提交后调用；丢弃强引用和缓存，不向已经退役的目标发起回退。
+          +static void rs_reset(void) {
+          +    pthread_mutex_lock(&g_rs_mu);
+          +    for (int k = 0; k < RS_BADQ; k++) { g_rs_bad[k] = nil; g_rs_bad_why[k] = NULL; }
+          +    g_rs_nbad = 0; pthread_mutex_unlock(&g_rs_mu);
+          +    g_rs_up = g_rs_down = g_rs_fail = 0; g_rs_skip = g_rs_block = 0;
+          +    rs_reset_setting();
+           }
+          diff --git a/graphics/nvn/gfx/nvn/nvn_session.inc b/graphics/nvn/gfx/nvn/nvn_session.inc
+          index 2ca2412..ba00db0 100644
+          --- a/graphics/nvn/gfx/nvn/nvn_session.inc
+          +++ b/graphics/nvn/gfx/nvn/nvn_session.inc
+          @@ -90,6 +90,7 @@ int nvn_be_shutdown_session(void) {
+               // consumes the old prefetch handoff before its pipeline maps are cleared.
+               warm_claim();
+               pool_session_reset();   // before the owners below: its pins would keep what they remove resident
+          +    rs_reset();   // Run-specific setting, pending roots and support-buffer addresses must not survive restart.
+               // No callbacks can touch these objects now. Drop descriptors first, then
+               // texture/program owners, then no-copy memory-pool buffers.
+               for (int i = 0; i < g_ntreg; i++) {
+          diff --git a/graphics/nvn/tests/rscale_access_probe.py b/graphics/nvn/tests/rscale_access_probe.py
+          new file mode 100644
+          index 0000000..5ea88c2
+          --- /dev/null
+          +++ b/graphics/nvn/tests/rscale_access_probe.py
+          @@ -0,0 +1,108 @@
+          +#!/usr/bin/env python3
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Compile the production access policy; the rejection sink is a CPU test spy."""
+          +import argparse
+          +import os
+          +from pathlib import Path
+          +import shutil
+          +import subprocess
+          +import tempfile
+          +
+          +
+          +def function(source, signature):
+          +    start = source.index(signature)
+          +    pos = source.index('{', start)
+          +    depth = 1
+          +    end = pos + 1
+          +    while depth:
+          +        depth += (source[end] == '{') - (source[end] == '}')
+          +        end += 1
+          +    return source[start:end]
+          +
+          +
+          +def main():
+          +    parser = argparse.ArgumentParser(description=__doc__)
+          +    parser.add_argument('--cc', default=os.environ.get('CC', 'cc'))
+          +    args = parser.parse_args()
+          +    root = Path(__file__).resolve().parents[1]
+          +    source = (root / 'gfx/nvn/nvn_rscale_ops.inc').read_text(encoding='utf-8')
+          +    bind = function(source, 'static inline void rs_bind_check(').replace('id<MTLTexture>', 'void *')
+          +    modern = 'const nvn_rbind *b' in bind
+          +    policy = function(source, 'static const char *rs_access_why(') if modern else ''
+          +    metal = (root / 'gfx/nvn/nvn_mtl.m').read_text(encoding='utf-8')
+          +    draw = function(metal, 'static void draw(const p_draw *dw, const p_draw_idx *di) {')
+          +    # Execute the production entry prefix, with downstream calls as counting spies.
+          +    # A geometry raster re-entry is in lane 2 and must not flush its own run.
+          +    entry = draw[draw.index('{') + 1:draw.index('    if (dw && dw->prim')]
+          +    entry = entry.replace('rs_on()', 'entry_on()')
+          +    call = 'rs_bind_check((void *)1, &s, stage, &b);' if modern else 'rs_bind_check((void *)1, &s, stage, kind);'
+          +    program = '''#include <stdio.h>
+          +#include <stddef.h>
+          +#include "nvn_refl.h"
+          +typedef struct { int exact, ts_lost, size_abi, size_exact, nts; struct { unsigned idx, img, reg; } ts[72]; } NvShader;
+          +static int rejected;
+          +static int rs_on(void) { return 1; }
+          +static void rs_bad(void *t, const char *why) { (void)t; (void)why; rejected = 1; }
+          +typedef int NvProg;
+          +#define nil NULL
+          +static NvProg program, *g_geo_program;
+          +static struct { void *prog; } S;
+          +static int entry_enabled, entry_flushes, entry_checks;
+          +static int entry_on(void) { return entry_enabled; }
+          +static void geo_run_flush(void) { entry_flushes++; }
+          +static NvProg *prog_get(void *p) { (void)p; return &program; }
+          +static int rs_pre_program(NvProg *p) { (void)p; entry_checks++; return 1; }
+          +static void draw_entry(void) { ENTRY }
+          +POLICY
+          +BIND
+          +static int probe(int stage, int kind, int rw, int atomic, int exact, int metadata) {
+          +    NvShader s = {.exact=exact, .nts=metadata}; s.ts[0].img=1; s.ts[0].reg=3; s.ts[0].idx=1;
+          +    nvn_rbind b = {.kind=kind == 2 ? NVN_RB_IMG : kind == 1 ? NVN_RB_TEXA : NVN_RB_TEX, .reg=3, .rw=rw, .atomic_image=atomic};
+          +    (void)b; rejected=0; CALL return rejected;
+          +}
+          +int main(void) {
+          +    const struct { int stage, kind, rw, atomic, exact, metadata, want; const char *name; } cases[] = {
+          +        {1,2,0,0,1,1,0,"exact fragment image load with scale metadata"},
+          +        {1,2,1,0,1,1,1,"fragment image store"},
+          +        {1,2,0,1,1,1,1,"image atomic without rw bit"},
+          +        {1,2,0,0,1,0,1,"image load without scale metadata"},
+          +        {5,2,0,0,1,1,1,"compute image load (unsupported stage)"},
+          +        {0,0,0,0,1,0,1,"vertex texture fetch"},
+          +        {1,0,0,0,1,0,0,"exact fragment sampled texture"},
+          +        {1,0,0,0,0,0,1,"inexact fragment sampled texture"},
+          +        {1,1,0,0,1,0,1,"dynamic handle array"}
+          +    };
+          +    int failed=0;
+          +    for (unsigned i=0;i<sizeof cases/sizeof *cases;i++) {
+          +        int got=probe(cases[i].stage,cases[i].kind,cases[i].rw,cases[i].atomic,cases[i].exact,cases[i].metadata);
+          +        printf("%s %s: expected rejection %d, got %d\\n",got==cases[i].want?"PASS":"FAIL",cases[i].name,cases[i].want,got);
+          +        failed+=got!=cases[i].want;
+          +    }
+          +    for (int enabled=0;enabled<2;enabled++) for (int recursive=0;recursive<2;recursive++) {
+          +        entry_enabled=enabled; g_geo_program=recursive?&program:NULL; S.prog=&program;
+          +        entry_flushes=entry_checks=0; draw_entry();
+          +        int want=enabled && !recursive, ok=entry_flushes==want && entry_checks==want;
+          +        printf("%s draw entry scale=%d geometry-raster-reentry=%d: flushes=%d checks=%d expected=%d\\n",
+          +            ok?"PASS":"FAIL",enabled,recursive,entry_flushes,entry_checks,want);
+          +        failed+=!ok;
+          +    }
+          +    return failed?1:0;
+          +}
+          +'''.replace('POLICY', policy).replace('BIND', bind).replace('CALL', call).replace('ENTRY', entry)
+          +    compiler = shutil.which(args.cc)
+          +    if not compiler:
+          +        raise SystemExit(f'C compiler not found: {args.cc}')
+          +    with tempfile.TemporaryDirectory(prefix='s2arm-rscale-access-') as tmp:
+          +        cfile = Path(tmp) / 'probe.c'
+          +        binary = Path(tmp) / ('probe.exe' if os.name == 'nt' else 'probe')
+          +        cfile.write_text(program, encoding='utf-8')
+          +        subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', str(root / 'gfx/nvn'), str(cfile), '-o', str(binary)], check=True)
+          +        rc = subprocess.run([str(binary)], check=False).returncode
+          +        if rc:
+          +            raise SystemExit(rc)
+          +    print('PASS: 9 production access-policy + 4 draw-entry cases; full geometry pipeline and Metal not tested.')
+          +
+          +
+          +if __name__ == '__main__':
+          +    main()
           diff --git a/graphics/nvn/tests/rscale_math_probe.py b/graphics/nvn/tests/rscale_math_probe.py
           new file mode 100644
-          index 0000000..5c9fa58
+          index 0000000..eddcac0
           --- /dev/null
           +++ b/graphics/nvn/tests/rscale_math_probe.py
-          @@ -0,0 +1,73 @@
+          @@ -0,0 +1,91 @@
           +#!/usr/bin/env python3
           +# SPDX-License-Identifier: Apache-2.0
           +# Copyright 2026 S2Arm contributors
@@ -248,11 +737,26 @@ jobs:
           +    checks = 'if (!rs_extent_ok(16384, 16384) || rs_extent_ok(16385, 720) || rs_extent_ok(1280, 16385) || rs_extent_ok(0, 720)) return 3;'
           +    program = '''#include <stdio.h>
           +#include <stdlib.h>
+          +#include <stdint.h>
           +#include <math.h>
           +typedef size_t NSUInteger;
           +#define MLOG(...) ((void)0)
           +''' + settings + geometry + '''
-          +int main(void) {
+          +int main(int argc, char **argv) {
+          +    (void)argv;
+          +    if (argc > 1) {
+          +        const char *values[] = {"2", "1", "2"};
+          +        for (int i = 0; i < 3; i++) {
+          +#ifdef _WIN32
+          +            _putenv_s("S2A_RES_SCALE", values[i]);
+          +#else
+          +            setenv("S2A_RES_SCALE", values[i], 1);
+          +#endif
+          +            rs_reset_setting();
+          +            printf("%.0f/%d/%llu%s", rs_setting(), rs_on(), (unsigned long long)g_rs_epoch, i == 2 ? "\\n" : " ");
+          +        }
+          +        return 0;
+          +    }
           +    double scale = rs_setting();
           +    long x = 3, y = -1, w = 11, h = 7;
           +    rs_rect(scale, &x, &y, &w, &h);
@@ -281,7 +785,7 @@ jobs:
           +        compiler = shutil.which(args.cc)
           +        if not compiler:
           +            raise SystemExit(f'C compiler not found: {args.cc}')
-          +        subprocess.run([compiler, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', str(cfile), '-lm', '-o', str(binary)], check=True)
+          +        subprocess.run([compiler, '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-O2', '-Wall', '-Wextra', '-Werror', str(cfile), '-lm', '-o', str(binary)], check=True)
           +        failures = []
           +        for value, expected in cases:
           +            env = dict(os.environ)
@@ -291,9 +795,89 @@ jobs:
           +            actual = subprocess.check_output([str(binary)], env=env, text=True).strip()
           +            if actual != expected:
           +                failures.append(f'{value!r}: expected {expected}; got {actual}')
+          +        actual = subprocess.check_output([str(binary), '--sessions'], text=True).strip()
+          +        if actual != '2/1/1 1/0/2 2/1/3':
+          +            failures.append(f'setting reset: expected 2/1/1 1/0/2 2/1/3; got {actual}')
           +        if failures:
           +            raise SystemExit('\n'.join(failures))
-          +    print(f'PASS: {len(cases)} production C setting/extent/rectangle cases; Metal GPU execution not tested.')
+          +    print(f'PASS: {len(cases)} production C setting/extent/rectangle cases + 2/1/2 reset; Metal GPU/session wiring not tested.')
+          +
+          +
+          +if __name__ == '__main__':
+          +    main()
+          diff --git a/graphics/nvn/tests/rscale_policy_probe.py b/graphics/nvn/tests/rscale_policy_probe.py
+          new file mode 100644
+          index 0000000..6e4bf3c
+          --- /dev/null
+          +++ b/graphics/nvn/tests/rscale_policy_probe.py
+          @@ -0,0 +1,71 @@
+          +#!/usr/bin/env python3
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Run the production texture-flag predicate as C (no Metal/device claims)."""
+          +import argparse
+          +import os
+          +from pathlib import Path
+          +import re
+          +import shutil
+          +import subprocess
+          +import tempfile
+          +
+          +
+          +def main():
+          +    parser = argparse.ArgumentParser(description=__doc__)
+          +    parser.add_argument('--cc', default=os.environ.get('CC', 'cc'))
+          +    args = parser.parse_args()
+          +    root = Path(__file__).resolve().parents[1]
+          +    source = (root / 'gfx/nvn/nvn_rscale.inc').read_text(encoding='utf-8')
+          +    eligible = source[source.index('static int rs_eligible('):]
+          +    bad = re.search(r'uint32_t bad = [^;]+;', eligible).group()
+          +    predicate = re.search(r'\n    if \((.+)\) w = "标志', eligible).group(1)
+          +    # Preserve the actual production expression; only provide its scalar input type.
+          +    program = '''#include <stdint.h>
+          +#include <stdio.h>
+          +#include "include/nvn.h"
+          +typedef struct { struct { uint32_t flags; } d; } tex_t;
+          +static int allowed(uint32_t flags, int depth) {
+          +    tex_t input = {{flags}}; const tex_t *t = &input; (void)depth;
+          +    BAD
+          +    return !(PREDICATE);
+          +}
+          +int main(void) {
+          +    const struct { uint32_t flags; int depth, want; const char *name; } cases[] = {
+          +        {0x0c, 0, 1, "COMPRESSIBLE|IMAGE colour"},
+          +        {0x0c, 1, 1, "COMPRESSIBLE|IMAGE depth"},
+          +        {0x01, 0, 1, "DISPLAY colour"},
+          +        {0x00, 1, 1, "depth without compression flag"},
+          +        {0x08, 0, 1, "existing compressible target"},
+          +        {0x00, 0, 0, "ordinary colour data"},
+          +        {0x44, 0, 0, "linear render target image"},
+          +        {0x18, 0, 0, "linear compressible"},
+          +        {0x28, 1, 0, "sparse depth"},
+          +        {0x0a, 0, 0, "video decode"}
+          +    };
+          +    int failed = 0;
+          +    for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++) {
+          +        int got = allowed(cases[i].flags, cases[i].depth);
+          +        printf("%s %s: expected %d, got %d\\n", got == cases[i].want ? "PASS" : "FAIL", cases[i].name, cases[i].want, got);
+          +        failed += got != cases[i].want;
+          +    }
+          +    return failed ? 1 : 0;
+          +}
+          +'''.replace('BAD', bad).replace('PREDICATE', predicate)
+          +    compiler = shutil.which(args.cc)
+          +    if not compiler:
+          +        raise SystemExit(f'C compiler not found: {args.cc}')
+          +    with tempfile.TemporaryDirectory(prefix='s2arm-rscale-policy-') as tmp:
+          +        cfile = Path(tmp) / 'probe.c'
+          +        binary = Path(tmp) / ('probe.exe' if os.name == 'nt' else 'probe')
+          +        cfile.write_text(program, encoding='utf-8')
+          +        subprocess.run([compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
+          +                        '-I', str(root / 'gfx/nvn'), str(cfile), '-o', str(binary)], check=True)
+          +        result = subprocess.run([str(binary)], check=False)
+          +        if result.returncode:
+          +            raise SystemExit(result.returncode)
+          +    print('PASS: 10 production flag cases; full eligibility and GPU paths not tested.')
           +
           +
           +if __name__ == '__main__':
@@ -353,7 +937,7 @@ jobs:
                printf("%s t_nvn_pkg_gpu_write%s: %u checks, %u failures\n",failures?"✗":"✓",scaled?" scaled":"",checks,failures); return failures?1:0;
            } }
           diff --git a/graphics/nvn/tests/t_nvn_rscale.m b/graphics/nvn/tests/t_nvn_rscale.m
-          index 4bf259e..49380eb 100644
+          index 4bf259e..c842010 100644
           --- a/graphics/nvn/tests/t_nvn_rscale.m
           +++ b/graphics/nvn/tests/t_nvn_rscale.m
           @@ -1,5 +1,5 @@
@@ -409,7 +993,7 @@ jobs:
                paint(want, W, H, RED, r2, 3, 1); read_game(&A, got); compare(got, want, W, H, NULL, 0, 0, "A（原尺寸图 → 缩放图 + 清除）ReadTexels");
                done();
            
-          @@ -191,7 +192,7 @@ int main(int argc, char **argv) {
+          @@ -191,12 +192,33 @@ int main(int argc, char **argv) {
                  int cw = 0, ch = 0, zw = 0, zh = 0, cs = nvn_be_tex_storage_size(&P, &cw, &ch), zs = nvn_be_tex_storage_size(&PZ, &zw, &zh);
                  printf("  颜色存储 %dx%d 记录 %d，深度存储 %dx%d 记录 %d（期望两者相同）\n", cw, ch, cs, zw, zh, zs);
                  REQUIRE(cw == zw && ch == zh);
@@ -418,6 +1002,156 @@ jobs:
                  paint(want, W, H, BLUE, NULL, 0, 1);   // 打包贴图的 ReadTexels 以池内存为准（读到打包原数据），GPU 内容走 CopyTextureToBuffer
                  begin(); { NVNcopyRegion r = {0, 0, 0, W, H, 1}; API(nvnCommandBufferCopyTextureToBuffer)(&commands, &P, NULL, &r, pa + BUF_OFFSET, 0); } submit();
                  compare((uint8_t *)storage + BUF_OFFSET, want, W, H, NULL, 0, 0, "P 内容 = 清屏蓝"); }
+               done();
+           
+          +    // 8. IMAGE 是可被图像槽访问的能力；这里仅作颜色/深度附件，应实际缩放。
+          +    phase = "8 IMAGE 颜色与深度附件";
+          +    { NVNtexture I, IZ;
+          +      make_tex(&I, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE);
+          +      make_tex(&IZ, NVN_FORMAT_DEPTH32F, NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE);
+          +      begin(); { const NVNtexture *ts[] = {&I}; API(nvnCommandBufferSetRenderTargets)(&commands, 1, ts, NULL, &IZ, NULL);
+          +          float f[] = {0, 1, 0, 1}; API(nvnCommandBufferSetScissor)(&commands, 0, 0, W, H);
+          +          API(nvnCommandBufferClearColor)(&commands, 0, f, 15); API(nvnCommandBufferClearDepthStencil)(&commands, 1, 1, 0, 255); } submit();
+          +      storage_is(&I, SCALED_ST, SW, SH); storage_is(&IZ, SCALED_ST, SW, SH);
+          +      REQUIRE(nvn_be_tex_storage_read(&I, raw, (size_t)SW * 4) == 0);
+          +      paint(rawwant, SW, SH, GREEN, NULL, 0, 1); compare(raw, rawwant, SW, SH, NULL, 0, 0, "IMAGE 放大存储的颜色"); }
+          +    done();
+          +
+          +    // 9. 上屏目标不能把前面的细节强制压回原尺寸；仍只按相同宽高倍率。
+          +    phase = "9 DISPLAY 颜色附件";
+          +    { NVNtexture P; make_tex(&P, NVN_FORMAT_RGBA8, NVN_TEXTURE_FLAGS_DISPLAY);
+          +      begin(); clear_rt(&P, r1, 1, RED); submit(); storage_is(&P, SCALED_ST, SW, SH);
+          +      REQUIRE(nvn_be_tex_storage_read(&P, raw, (size_t)SW * 4) == 0);
+          +      paint(rawwant, SW, SH, RED, r1, 1, 1.0 / scale); compare(raw, rawwant, SW, SH, NULL, 0, 0, "DISPLAY 原比例存储"); }
+          +    done();
+          +
+               printf("t_nvn_rscale %s：%u 组、%u 项全过\n", argv[1], cases, checks);
+               }
+               return 0;
+          diff --git a/graphics/nvn/tests/t_nvn_rscale_access.m b/graphics/nvn/tests/t_nvn_rscale_access.m
+          new file mode 100644
+          index 0000000..ab6411a
+          --- /dev/null
+          +++ b/graphics/nvn/tests/t_nvn_rscale_access.m
+          @@ -0,0 +1,118 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +// Production preflight / storage / GPU copy tests. Synthetic reflection describes
+          +// the access contract; this fixture does not validate shader translation or a game.
+          +#include "../gfx/nvn/nvn_mtl.m"
+          +
+          +static unsigned checks;
+          +#define REQUIRE(c) do { checks++; if (!(c)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); exit(1); } } while (0)
+          +static pool_t test_pool;
+          +static size_t next_texture;
+          +static tex_t textures[48];
+          +static unsigned texture_count;
+          +
+          +static tex_t *target(int tid) {
+          +    REQUIRE(texture_count < 48);
+          +    tex_t *t = &textures[texture_count++];
+          +    *t = (tex_t){.magic=MAGIC('T','E','X',0), .serial=nvn_new_serial(),
+          +        .d={.target=NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_RGBA8,
+          +            .flags=NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_IMAGE,
+          +            .width=64, .height=48, .depth=1, .levels=1},
+          +        .pool=&test_pool, .off=next_texture, .mem=test_pool.mem+next_texture};
+          +    next_texture += 65536; REQUIRE(next_texture <= test_pool.size);
+          +    nvn_tex_layout(&t->d, &t->L); nvn_be_tex_init(t); nvn_be_reg_tex(tid, t, NULL);
+          +    return t;
+          +}
+          +static void blue_clear(tex_t *t, int leave_open) {
+          +    rp_flush(); memset(&R, 0, sizeof R);
+          +    R.has_rt=1; R.rt.n=1; R.rt.color[0]=t;
+          +    R.clear_c[0]=1; R.cc[0]=MTLClearColorMake(0,0,1,1);
+          +    if (leave_open) rp_begin_ex(1); else rp_flush();
+          +}
+          +static void size_is(tex_t *t, int state, int w, int h) {
+          +    id<MTLTexture> m=tex_mtl(t);
+          +    REQUIRE(m && rs_state(m)==state && m.width==(NSUInteger)w && m.height==(NSUInteger)h);
+          +}
+          +static void finish(void) {
+          +    rp_flush(); uint64_t fence=nvn_be_sub_commit();
+          +    REQUIRE(nvn_be_wait(fence, 10000000000ull)); REQUIRE(!mtl_last_commit_error());
+          +}
+          +static NvShader *image_shader(int write) {
+          +    NvShader *s=[NvShader new]; s->exact=1; s->nts=1;
+          +    s->ts[0].idx=1; s->ts[0].img=1; s->ts[0].reg=0;
+          +    s->rf.nb=1; s->rf.b[0]=(nvn_rbind){.kind=NVN_RB_IMG,.reg=0,.rw=write};
+          +    return s;
+          +}
+          +int main(void) { @autoreleasepool {
+          +    setenv("S2A_RES_SCALE","2",1); setenv("S2A_WIDEN","0",1); mtl_init();
+          +    REQUIRE(rs_setting()==2);
+          +    uint8_t *memory=NULL; REQUIRE(!posix_memalign((void **)&memory,65536,4<<20)); memset(memory,0,4<<20);
+          +    test_pool=(pool_t){.magic=MAGIC('P','O','O','L'), .flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS | NVN_MEMORY_POOL_FLAGS_GPU_CACHED,.mem=memory,.size=4<<20};
+          +    nvn_be_pool_add(memory,4<<20); nvn_be_sub_begin();
+          +    NvShader *read=image_shader(0), *write=image_shader(1);
+          +
+          +    // A write before the first render must blacklist an unscaled root too.
+          +    tex_t *a=target(1); S.img[1][0]=1; REQUIRE(rs_pre_shader(write,1));
+          +    blue_clear(a,0); size_is(a,RS_BLACK,64,48);
+          +
+          +    // The first unsupported access ends the open pass and lands its clear before
+          +    // downsizing. No second pass/dispatch is needed to make the access safe.
+          +    tex_t *b=target(2); S.img[1][0]=2; blue_clear(b,1); size_is(b,RS_SCALED,128,96);
+          +    REQUIRE(rs_pre_shader(read,1)); size_is(b,RS_SCALED,128,96);
+          +    REQUIRE(rs_pre_shader(write,1)); REQUIRE(!g_enc); size_is(b,RS_BLACK,64,48);
+          +    finish();
+          +    uint8_t pixels[64*48*4]; REQUIRE(nvn_be_tex_storage_read(b,pixels,64*4)==0);
+          +    for (unsigned i=0;i<64*48;i++) REQUIRE(pixels[4*i]==0 && pixels[4*i+1]==0 && pixels[4*i+2]==255 && pixels[4*i+3]==255);
+          +
+          +    // The same physical image reached through a uniform-buffer handle is checked.
+          +    nvn_be_sub_begin(); tex_t *c=target(3); blue_clear(c,0);
+          +    uint32_t *handle=(uint32_t *)(memory+(3<<20)); *handle=3;
+          +    S.ubo[1][0]=(p_bind_buf){.addr=(uint64_t)(uintptr_t)handle,.size=16};
+          +    NvShader *indirect=image_shader(1); indirect->rf.b[0].kind=NVN_RB_IMGU; indirect->rf.b[0].off=0;
+          +    REQUIRE(rs_pre_shader(indirect,1)); size_is(c,RS_BLACK,64,48);
+          +
+          +    // A read-only image without exact scale metadata remains native.
+          +    tex_t *d=target(4); blue_clear(d,0); S.img[1][0]=4;
+          +    NvShader *legacy=image_shader(0); legacy->nts=0;
+          +    REQUIRE(rs_pre_shader(legacy,1)); size_is(d,RS_BLACK,64,48);
+          +
+          +    // More than the old 32-entry compute prescan: none may be silently skipped.
+          +    NvShader *compute=[NvShader new]; compute->exact=1; compute->rf.nb=40;
+          +    for (int i=0;i<40;i++) {
+          +        tex_t *t=target(10+i); blue_clear(t,0); S.tex[5][i]=(uint64_t)(10+i);
+          +        compute->rf.b[i]=(nvn_rbind){.kind=NVN_RB_TEX,.reg=i};
+          +        size_is(t,RS_SCALED,128,96);
+          +    }
+          +    REQUIRE(rs_pre_shader(compute,5));
+          +    for (unsigned i=4;i<texture_count;i++) size_is(&textures[i],RS_BLACK,64,48);
+          +
+          +    // ID 0 is legal. Exercise direct, UBO-handle and dynamic-pool access, each
+          +    // against a fresh root; a prior blacklist must not mask a missed branch.
+          +    tex_t *zero=target(0); blue_clear(zero,0); S.img[1][0]=0;
+          +    REQUIRE(rs_pre_shader(write,1)); size_is(zero,RS_BLACK,64,48);
+          +    zero=target(0); blue_clear(zero,0); *handle=0; S.tex_base=0;
+          +    REQUIRE(rs_pre_shader(indirect,1)); size_is(zero,RS_BLACK,64,48);
+          +    zero=target(0); blue_clear(zero,0);
+          +    NvShader *pool_access=[NvShader new]; pool_access->rf.nb=1;
+          +    pool_access->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEXP};
+          +
+          +    // Warm an sRGB view before fallback; both registered aliases must resolve to
+          +    // the replacement root afterwards, with their own pixel formats preserved.
+          +    view_t srgb={.set_format=1,.format=NVN_FORMAT_RGBA8_SRGB};
+          +    nvn_be_reg_tex(100,zero,&srgb);
+          +    pthread_mutex_lock(&g_rmu); id<MTLTexture> old_view=tex_by_id(100); pthread_mutex_unlock(&g_rmu);
+          +    REQUIRE(old_view.width==128 && old_view.pixelFormat==MTLPixelFormatRGBA8Unorm_sRGB);
+          +    REQUIRE(rs_pre_shader(pool_access,1)); size_is(zero,RS_BLACK,64,48);
+          +    pthread_mutex_lock(&g_rmu); id<MTLTexture> new_view=tex_by_id(100); pthread_mutex_unlock(&g_rmu);
+          +    REQUIRE(new_view.width==64 && new_view.height==48 && new_view.pixelFormat==MTLPixelFormatRGBA8Unorm_sRGB);
+          +    REQUIRE(rs_root(new_view)==rs_root(tex_mtl(zero)));
+          +    finish();
+          +
+          +    // Real session lifecycle, not a direct reset helper call: 2 -> 1 -> 2.
+          +    REQUIRE(nvn_be_shutdown_session()==0); setenv("S2A_RES_SCALE","1",1); nvn_be_begin_session();
+          +    REQUIRE(rs_setting()==1 && !rs_on() && !g_rs_nbad);
+          +    REQUIRE(nvn_be_shutdown_session()==0); setenv("S2A_RES_SCALE","2",1); nvn_be_begin_session();
+          +    REQUIRE(rs_setting()==2 && rs_on() && !g_rs_nbad);
+          +    printf("PASS t_nvn_rscale_access: %u checks; real Metal storage/preflight/session, no gameplay or translator validation\n",checks);
+          +    return 0;
+          +} }
           diff --git a/pack/stage_inputs/shell.tsv b/pack/stage_inputs/shell.tsv
           index a045f96..c590623 100644
           --- a/pack/stage_inputs/shell.tsv
@@ -695,7 +1429,7 @@ jobs:
            TEST_TARGETS += native-test-nvn_pkg_gpu_write
            endif
           diff --git a/runtime/tests/mk/nvn_rscale.mk b/runtime/tests/mk/nvn_rscale.mk
-          index b88d640..ff3fee8 100644
+          index b88d640..a362c5c 100644
           --- a/runtime/tests/mk/nvn_rscale.mk
           +++ b/runtime/tests/mk/nvn_rscale.mk
           @@ -1,4 +1,4 @@
@@ -704,8 +1438,20 @@ jobs:
            NATIVE_TEST_OWN += nvn_rscale
            ifeq ($(shell uname -s),Darwin)
            $(BUILD)/tests/t_nvn_rscale: graphics/nvn/tests/t_nvn_rscale.m graphics/nvn/gfx/nvn/nvn_protos.h graphics/nvn/gfx/nvn/include/nvn.h $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
-          @@ -11,8 +11,12 @@ $(BUILD)/tests/t_nvn_rscale: graphics/nvn/tests/t_nvn_rscale.m graphics/nvn/gfx/
-           native-test-nvn_rscale: $(BUILD)/tests/t_nvn_rscale
+          @@ -7,12 +7,25 @@ $(BUILD)/tests/t_nvn_rscale: graphics/nvn/tests/t_nvn_rscale.m graphics/nvn/gfx/
+           	  -Wl,-rpath,@executable_path/nvn/widen $(NVN_TEST_WEAK) \
+           	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
+           	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
+          +$(BUILD)/tests/t_nvn_rscale_access: graphics/nvn/tests/t_nvn_rscale_access.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
+          +	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
+          +	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \
+          +	  -o $@ graphics/nvn/tests/t_nvn_rscale_access.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN) \
+          +	  -Wl,-rpath,@executable_path/nvn/widen $(NVN_TEST_WEAK) \
+          +	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
+          +	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
+           .PHONY: native-test-nvn_rscale
+          -native-test-nvn_rscale: $(BUILD)/tests/t_nvn_rscale
+          +native-test-nvn_rscale: $(BUILD)/tests/t_nvn_rscale $(BUILD)/tests/t_nvn_rscale_access
            	timeout 120 $(BUILD)/tests/t_nvn_rscale scaled
            	timeout 120 $(BUILD)/tests/t_nvn_rscale off
           +	timeout 120 $(BUILD)/tests/t_nvn_rscale onehalf
@@ -715,15 +1461,17 @@ jobs:
           -	@echo '✓ t_nvn_rscale：Metal 4 / Metal 3 × 缩放 0.5 / 关 四遍各 6 组全过'
           +	NXGAL_BE=mtl3 timeout 120 $(BUILD)/tests/t_nvn_rscale onehalf
           +	NXGAL_BE=mtl3 timeout 120 $(BUILD)/tests/t_nvn_rscale upscaled
-          +	@echo '✓ t_nvn_rscale：Metal 4 / Metal 3 × 0.5 / 1 / 1.5 / 2 八遍各 7 组全过'
+          +	timeout 120 $(BUILD)/tests/t_nvn_rscale_access
+          +	NXGAL_BE=mtl3 timeout 120 $(BUILD)/tests/t_nvn_rscale_access
+          +	@echo '✓ t_nvn_rscale：Metal 4 / Metal 3 × 0.5 / 1 / 1.5 / 2 八遍各 9 组；访问前回退与会话重置两路全过'
            TEST_TARGETS += native-test-nvn_rscale
            endif
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/gfx/nvn/nvn_rscale.inc' 'graphics/nvn/gfx/nvn/nvn_rscale_ops.inc' 'graphics/nvn/tests/rscale_math_probe.py' 'graphics/nvn/tests/t_nvn_pkg_gpu_write.m' 'graphics/nvn/tests/t_nvn_rscale.m' 'pack/stage_inputs/shell.tsv' 'runtime/tests/mk/nvn_pkg_gpu_write.mk' 'runtime/tests/mk/nvn_rscale.mk'
+          git add -- 'docs/superpowers/plans/2026-11-12-render-scale.md' 'docs/superpowers/specs/2026-11-12-render-scale-design.md' 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/gfx/nvn/nvn_rscale.inc' 'graphics/nvn/gfx/nvn/nvn_rscale_ops.inc' 'graphics/nvn/gfx/nvn/nvn_session.inc' 'graphics/nvn/tests/rscale_access_probe.py' 'graphics/nvn/tests/rscale_math_probe.py' 'graphics/nvn/tests/rscale_policy_probe.py' 'graphics/nvn/tests/t_nvn_pkg_gpu_write.m' 'graphics/nvn/tests/t_nvn_rscale.m' 'graphics/nvn/tests/t_nvn_rscale_access.m' 'pack/stage_inputs/shell.tsv' 'runtime/tests/mk/nvn_pkg_gpu_write.mk' 'runtime/tests/mk/nvn_rscale.mk'
           tree="$(git write-tree)"
-          test "$tree" = "54eb1cdefcf9a752c3972db1e957daef1b6ad019"
+          test "$tree" = "33af0fd691669f0c93feba74a17f0b29a979f8b5"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
@@ -735,6 +1483,8 @@ jobs:
           python3 pack/shell/closure.py pyimports
           python3 pack/shell/closure.py csiblings
           python3 graphics/nvn/tests/rscale_math_probe.py --cc clang 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/rscale-math.log"
+          python3 graphics/nvn/tests/rscale_policy_probe.py --cc clang 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/rscale-policy.log"
+          python3 graphics/nvn/tests/rscale_access_probe.py --cc clang 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/rscale-access.log"
 
       - name: Prepare Python dependencies and timezone sources
         working-directory: source
@@ -796,6 +1546,41 @@ jobs:
           # dependency first so its stderr survives, then let Shell reuse its cache.
           bash services/opus/build.sh ios-arm64 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/opus-build.log"
 
+      - name: Compile Metal regressions and run when a GPU is present
+        working-directory: source
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/s2arm-output/logs"
+          echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
+          "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_rscale_access build/tests/t_nvn_pkg_gpu_write 2>&1 | tee "$logs/rscale-native-build.log"
+          cat > "$RUNNER_TEMP/s2arm-metal-device.m" <<'METAL_DEVICE'
+          #import <Foundation/Foundation.h>
+          #import <Metal/Metal.h>
+          #include <stdio.h>
+          int main(void) { @autoreleasepool {
+              id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+              if (!device) { puts("No Metal device on this runner"); return 77; }
+              printf("Metal device: %s\n", device.name.UTF8String); return 0;
+          } }
+          METAL_DEVICE
+          xcrun --sdk macosx clang -fobjc-arc "$RUNNER_TEMP/s2arm-metal-device.m" -framework Foundation -framework Metal -o "$RUNNER_TEMP/s2arm-metal-device"
+          device_status=0
+          "$RUNNER_TEMP/s2arm-metal-device" > "$logs/rscale-device.log" 2>&1 || device_status=$?
+          cat "$logs/rscale-device.log"
+          if [ "$device_status" -eq 77 ]; then
+            echo 'Metal fixture compilation: PASS. GPU execution: SKIPPED (runner has no Metal device). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
+            echo '::warning::No Metal device. Native fixtures compiled, but GPU behavior is unverified.'
+          elif [ "$device_status" -ne 0 ]; then
+            echo "::error::Metal device probe failed ($device_status)."
+            exit "$device_status"
+          else
+            echo 'Metal fixture compilation: PASS. GPU execution: RUNNING.' > "$logs/rscale-gpu-status.txt"
+            "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_rscale native-test-nvn_pkg_gpu_write 2>&1 | tee "$logs/rscale-native-run.log"
+            echo 'Metal fixture compilation: PASS. GPU execution: PASS (Metal 3/4 synthetic storage, copy, readback and session checks). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
+          fi
+          cat "$logs/rscale-gpu-status.txt" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build Shell with the upstream entry point
         working-directory: source
         run: |
@@ -815,10 +1600,11 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.2.9 with experimental 1.5x / 2x; default 1x"
+            echo "Custom build: S2Arm 0.2.9 experimental 2x revision 3; default 1x"
             echo "Upstream baseline: 77b436b57b0739447a1db27718085d34840e9917"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
-            echo "Scalar helpers checked; Metal GPU regression and iPhone visuals not tested by this workflow."
+            cat "$output/logs/rscale-gpu-status.txt"
+            echo "iPhone gameplay and visual quality are not verified by this workflow."
             echo "Source: https://github.com/jhaizhou-ops/S2Arm"
             git rev-parse HEAD
             xcodebuild -version
@@ -830,9 +1616,10 @@ jobs:
           git bundle create "$output/artifact/S2Arm-source.bundle" refs/heads/s2arm-2x-build
           git bundle verify "$output/artifact/S2Arm-source.bundle"
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
+          cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           printf '0.2.9\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch version.txt > SHA256SUMS.txt
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch version.txt rscale-gpu-status.txt build-info.txt > SHA256SUMS.txt
           echo 'Shell build completed. Download S2Arm-Shell-2x from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell

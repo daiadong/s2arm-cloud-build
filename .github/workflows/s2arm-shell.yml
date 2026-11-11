@@ -25,12 +25,18 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_NOLOGO: '1'
       HOMEBREW_NO_AUTO_UPDATE: '1'
-      S2A_CS_CACHE: ${{ runner.temp }}/s2arm-cache/nxaot
-      S2A_VPX_CACHE: ${{ runner.temp }}/s2arm-cache/vpx
-      S2A_OPUS_CACHE: ${{ runner.temp }}/s2arm-cache/opus
-      S2A_DAV1D_CACHE: ${{ runner.temp }}/s2arm-cache/dav1d
 
     steps:
+      - name: Initialize cache paths
+        run: |
+          set -euo pipefail
+          {
+            echo "S2A_CS_CACHE=$RUNNER_TEMP/s2arm-cache/nxaot"
+            echo "S2A_VPX_CACHE=$RUNNER_TEMP/s2arm-cache/vpx"
+            echo "S2A_OPUS_CACHE=$RUNNER_TEMP/s2arm-cache/opus"
+            echo "S2A_DAV1D_CACHE=$RUNNER_TEMP/s2arm-cache/dav1d"
+          } >> "$GITHUB_ENV"
+
       - name: Check out original S2Arm 0.2.9
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

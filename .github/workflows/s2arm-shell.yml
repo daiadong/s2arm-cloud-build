@@ -35,6 +35,7 @@ jobs:
             echo "S2A_VPX_CACHE=$RUNNER_TEMP/s2arm-cache/vpx"
             echo "S2A_OPUS_CACHE=$RUNNER_TEMP/s2arm-cache/opus"
             echo "S2A_DAV1D_CACHE=$RUNNER_TEMP/s2arm-cache/dav1d"
+            echo "S2A_BUILD_CACHE=$RUNNER_TEMP/s2arm-cache/downloads"
           } >> "$GITHUB_ENV"
 
       - name: Check out original S2Arm 0.2.9
@@ -106,6 +107,49 @@ jobs:
           bash services/systemdata/make_tzdata.sh --prepare-sources
           git diff --exit-code
           git diff --cached --exit-code
+
+      - name: Download verified Opus source with mirror and retries
+        working-directory: source
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          # Preserve upstream source identity: preload its content-addressed cache.
+          source android/tools/fetch_source.sh
+          opus_version="$(sed -nE 's/^VER=([^;]+); SHA=.*/\1/p' services/opus/build.sh)"
+          opus_sha="$(sed -nE 's/^VER=[^;]+; SHA=([0-9a-f]{64}).*/\1/p' services/opus/build.sh)"
+          if [[ ! "$opus_version" =~ ^[0-9]+(\.[0-9]+)+$ || ! "$opus_sha" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Cannot read the pinned Opus version and checksum."
+            exit 1
+          fi
+          source_dir="$(s2a_source_cache_dir)/$opus_sha"
+          source_archive="$source_dir/opus-$opus_version.tar.gz"
+          mkdir -p "$source_dir"
+          if [ -f "$source_archive" ] && [ "$(_s2a_fetch_sha256 "$source_archive")" = "$opus_sha" ]; then
+            echo "Verified cached Opus $opus_version source."
+            exit 0
+          fi
+          partial="$(mktemp "$source_dir/.opus-download.XXXXXX")"
+          trap 'rm -f "$partial"' EXIT
+          for source_url in \
+            "https://ftp.osuosl.org/pub/xiph/releases/opus/opus-$opus_version.tar.gz" \
+            "https://downloads.xiph.org/releases/opus/opus-$opus_version.tar.gz"; do
+            echo "Downloading Opus from $source_url"
+            if curl --fail --location --silent --show-error \
+              --retry 3 --retry-all-errors --retry-delay 3 --retry-max-time 180 \
+              --connect-timeout 20 --max-time 90 --output "$partial" "$source_url"; then
+              actual_sha="$(_s2a_fetch_sha256 "$partial")"
+              if [ "$actual_sha" = "$opus_sha" ]; then
+                mv -f "$partial" "$source_archive"
+                echo "Opus $opus_version downloaded and SHA-256 verified: $actual_sha"
+                exit 0
+              fi
+              echo "::warning::Opus checksum mismatch from $source_url; refusing this download."
+            else
+              echo "::warning::Download failed from $source_url; trying the next source."
+            fi
+          done
+          echo "::error::No Opus source download passed the pinned SHA-256 check."
+          exit 1
 
       - name: Build Opus dependency with visible diagnostics
         working-directory: source

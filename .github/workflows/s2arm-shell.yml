@@ -1,12 +1,15 @@
 # Add this file to YOUR repository at .github/workflows/s2arm-shell.yml.
-# Experimental 2x rendering on pinned S2Arm 0.2.9; default remains 1x.
+# Experimental 2x rendering on pinned S2Arm 0.3.1; default remains 1x.
 # Self-contained: the patch and matching-source packaging are included below.
 # Revision 3.1: GPU eligibility checks unified memory, Metal4 and residency creation.
-# Render-scale source is unchanged from revision 3; full source / closure checks stay enabled.
-name: S2Arm Shell 2x CI3.1 (macOS)
+# R3 render-scale behavior ported to official v0.3.1; full source / closure checks stay enabled.
+name: S2Arm 0.3.1 Shell 2x (macOS)
 
 on:
   workflow_dispatch:
+  push:
+    branches: ['codex/s2arm-031-2x']
+    paths: ['.github/workflows/s2arm-shell.yml']
 
 permissions:
   contents: read
@@ -41,11 +44,11 @@ jobs:
             echo "S2A_BUILD_CACHE=$RUNNER_TEMP/s2arm-cache/downloads"
           } >> "$GITHUB_ENV"
 
-      - name: Check out original S2Arm 0.2.9
+      - name: Check out original S2Arm 0.3.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: jhaizhou-ops/S2Arm
-          ref: 77b436b57b0739447a1db27718085d34840e9917
+          ref: 71a1686ed06abb8d725b53d6d6489fc023764ae6
           path: source
           fetch-depth: 0
           persist-credentials: false
@@ -106,131 +109,29 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "77b436b57b0739447a1db27718085d34840e9917"
+          test "$(git rev-parse HEAD)" = "71a1686ed06abb8d725b53d6d6489fc023764ae6"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
-          diff --git a/docs/superpowers/plans/2026-11-12-render-scale.md b/docs/superpowers/plans/2026-11-12-render-scale.md
-          new file mode 100644
-          index 0000000..7555e61
-          --- /dev/null
-          +++ b/docs/superpowers/plans/2026-11-12-render-scale.md
-          @@ -0,0 +1,50 @@
-          +# Render Scale Implementation Plan
-          +
-          +> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-          +
-          +**Goal:** 让符合条件的 IMAGE / DISPLAY 渲染目标实际按设置缩放，首次不支持的访问之前回退，保持原比例。
-          +**Architecture:** 复用 `rs_rts`、`rs_rescale` 和 S2Arm 的精确 shader 倍率表；新增编码前用途预检查；会话切换清理所有缩放缓存。
-          +**Tech Stack:** Objective-C / Metal、C、Python、GitHub Actions macOS。
-          +**Spec:** `docs/superpowers/specs/2026-11-12-render-scale-design.md`
-          +
-          +## Global Constraints
-          +
-          +- 1x 保持原路径；禁止游戏 ID / 地址专用分支；不更改 shader ABI。
-          +- Windows 不能运行 Metal；运行结果与待验证项必须分开记录。
-          +- 保留游戏资源、原打包器、原 IPA；只更新开发分支和可直接编辑的 YAML，更新前备份。
-          +
-          +## Review Focus
-          +
-          +- 首次 image 写入发生在第一次缩放之前：必须阻止紧随其后的目标提升。
-          +- 已打开的渲染遍、延迟清除、几何/曲面路径：回退必须在本次编码前生效。
-          +- 多个纹理、动态句柄数组与间接 IMAGE：不能遗漏首次访问或因固定队列上限继续使用错误尺寸。
-          +- sRGB / linear 视图、CPU 重传和同遍深度：替换存储后所有引用与内容必须一致。
-          +- 游戏会话 2→1→2：倍率、支持缓冲地址和待回退引用不得跨局复用。
-          +
-          +### Task 1: 重现并修复候选判定
-          +
-          +**Files:** `graphics/nvn/gfx/nvn/nvn_rscale.inc`，`graphics/nvn/tests/rscale_policy_probe.py`，`graphics/nvn/tests/t_nvn_rscale.m`。
-          +**Interfaces:** 继续通过 `rs_eligible` 判定；生产 C 探针直接执行该判定的旗标部分。
-          +- [x] 增加 IMAGE|COMPRESSIBLE、DISPLAY、线性拒绝等字面期望，并保存旧代码失败输出。
-          +- [x] 修改候选标志规则，保留尺寸/格式等筛选；补 GPU IMAGE 与 DISPLAY 目标及内容测试。
-          +- [x] 执行 CPU 探针和原有标量测试，记录 GPU 待运行；保留负对照。
-          +
-          +### Task 2: 首次访问前回退与会话清理
-          +
-          +**Files:** `graphics/nvn/gfx/nvn/nvn_rscale_ops.inc`，`nvn_mtl.m`，`nvn_session.inc`，相应测试。
-          +**Interfaces:** draw/dispatch 调用预检查，使用真实绑定与 `NvShader` 精确性信息；缩放记录仍为 NONE/SCALED/BLACK。
-          +- [x] 写先写后画、先画后写、只读 IMAGE 与不精确 shader 等行为判据；增加会话重置判据。
-          +- [x] 在正常及替代 draw 路径、compute 编码之前处理不支持的访问。支持缓冲与使用判定共用精确性约束。
-          +- [x] 清理会话倍率、队列、日志计数和支持缓冲缓存。
-          +- [x] 跑可用测试与负对照；补充 GPU 回归，说明所有未测条件。
-          +
-          +### Task 3: 审查与 CI 交付
-          +
-          +**Files:** `docs/坑记录.md`，本机 `make_2x_workflow.py`，`s2arm-shell.yml`。
-          +**Interfaces:** 自包含 patch + matching source bundle，保留原始 0.2.9 基线与输入闭包检查。
-          +- [x] 独立代码审查并修复重要问题（几何递归 lane 与合法 ID 0；复核无新增重要项）。
-          +- [ ] 按允许列表提交本地分支，运行可用门禁，记录 Windows 限制。
-          +- [ ] 更新生成器，加入 CPU / Metal 回归步骤并生成 YAML；临时干净索引验证内嵌 patch 和源码树。
-          +- [ ] 备份并更新用户可直接编辑的 YAML，输出检查记录及云端构建/手机验收步骤。
-          +
-          +**本地验证界限：** CPU 判据和四类负对照已运行；Metal 编译 / GPU / iPhone 尚未运行。CI 必须先编译原生测试，实际检测无 Metal device 时显式记录 SKIPPED，不能记 GPU 通过。有设备时测试失败阻止出壳。Task 3 的生成和回放发生在提交源码之后，结果另存本机验证报告。
-          diff --git a/docs/superpowers/specs/2026-11-12-render-scale-design.md b/docs/superpowers/specs/2026-11-12-render-scale-design.md
-          new file mode 100644
-          index 0000000..7880d3a
-          --- /dev/null
-          +++ b/docs/superpowers/specs/2026-11-12-render-scale-design.md
-          @@ -0,0 +1,22 @@
-          +# 内部渲染倍率的用途判定修复
-          +
-          +用户已确认开始实施：iPhone 上选择 2x 后实际增大可缩放的 3D 渲染目标，保持原始画幅，不开启宽屏、不拉伸；沿用 Windows 组装及 macOS CI 出壳。
-          +
-          +已验证的问题：设置 2 已传入 NVN，但 `COMPRESSIBLE | IMAGE` 的颜色/深度目标被 `rs_eligible` 一律拒绝；旧补丁仅解除倍率上限。另有同进程重启游戏后 `g_rs` 缓存未重置的问题。
-          +
-          +## Approaches
-          +
-          +- 只删除 IMAGE 排除：首次不支持的 shader 访问可能在回退前就使用放大存储，不采用。
-          +- 改写各游戏的尺寸初始化：需要逐引擎适配，不符合本次通用渲染修复范围。
-          +- 采用 nxnative PR #1716 的用途判定思想，接入 S2Arm 现有缩放与精确性元数据：本次采用。保留既有 shader ABI，不能整段移植另一套支持缓冲布局。
-          +
-          +## 边界
-          +
-          +- 在现有独立 `codex/metal-2x` 开发副本实施，不修改用户安装目录、游戏数据或已组装 IPA。
-          +- IMAGE 是能力标志，不等于写入；允许 IMAGE 渲染目标，实际 shader 写入/原子访问必须在编码之前恢复原尺寸。没有精确坐标元数据的访问继续保守回退。
-          +- 允许符合原有形状/格式限制的 DISPLAY 渲染目标，使高分辨率结果保留到出图；线性、稀疏、视频、MSAA 等限制仍保留。
-          +- 保持原有按目标首次渲染时扩大机制、完整内容复制、别名和同遍附件一致性；CPU 数据不因放大丢失。
-          +- 加入会话重置与支持缓冲失效处理；1x 不走新路径。
-          +- 先执行可在 Windows 运行的生产 C 判据，补充 Metal 合成测试及 CI 执行步骤。没有 GPU/真机证据时只报告补丁和本地检查结果，不声称画质已修好。
-          +
-          +参考：https://github.com/seedds/nxnative/pull/1716 （18d6abacbfc9295ce5d33f0f9f6afdb8b8885f88，未合入、无 iPhone 实测）；Ryujinx `TextureCache.IsUpscaleCompatible` / `TextureBindingsManager.UpdateScale`。
           diff --git a/docs/坑记录.md b/docs/坑记录.md
-          index 438051d..7e84607 100644
+          index 650c151..85c2c0c 100644
           --- a/docs/坑记录.md
           +++ b/docs/坑记录.md
-          @@ -1481,3 +1481,29 @@ Apple 芯片 Mac（macOS 27.2、Python 3.12.16），以 `9749debe` 为基线，
-           **实验数据（期望 → 真结果）**：debian:trixie-slim arm64 容器、基线 `10c0a025`。只装 `libvulkan1 mesa-vulkan-drivers` → `cannot find -lvulkan` 链接红；补装 `libvulkan-dev` → lavapipe（llvmpipe，LLVM 19.1.7）起来，`nvn_vk_readback_gpu_test` 22 checks 0 failed、`nvn_vk_frame_tsv_test` 14 checks 0 failed。
+          @@ -2400,3 +2400,11 @@ Apple 芯片 Mac（macOS 27.2、Python 3.12.16），以 `9749debe` 为基线，
+           **做法**：`s2a_controller_set_foreground` 回主线程；`S2A_MAIN_ONLY`（ios/controller.h）在只许主线程的入口打【红】，`S2A_STRICT_MAIN=1` 时当场中止；门禁接线断言 `runtime/tests/t_ios_main_thread.c`（挂起函数体剔掉主队列块后不许出现 UIKit 标识、主线程那一跳在、入口断言在、自测开关在）；真机宿主自测 `S2A_TEST_LIFECYCLE=<秒>` 按真机顺序发失去焦点 → 获得焦点 → 进后台 → 回前台 → 获得焦点。
            
-           **做法**：容器里跑要 `-lvulkan` 链接或 lavapipe 执行的宿主测试，apt 三件套一起装：`libvulkan1 libvulkan-dev mesa-vulkan-drivers`。
+           **以后**：往生命周期队列上加调用前，先看它碰不碰 UIKit；碰的一律回主线程，并在入口加 `S2A_MAIN_ONLY`。
           +
-          +## 私有 2x 试验：设置允许 2，而 NVN 后端把倍率夹回 1
+          +## 私有 0.3.1 构建迁移：2X 渲染与源码输入清单
           +
-          +**现象与根因**：基线 `77b436b57b0739447a1db27718085d34840e9917` 的 iOS 设置含 1.5 / 2，NVN `rs_setting` 把大于 1 的值夹回 1，`rs_on` 也只接受小于 1。放开数值上限还必须改启动条件。
+          +**现象**：官方 v0.3.1（71a1686）的 NVN 后端仍将大于 1 的倍率夹回 1；0.2.9 R3 全补丁在坑记录和壳输入表两处不适用。
           +
-          +**实验数据（期望 → 真结果）**：Windows x64 / GCC，直接提取生产 C 标量函数编译的 `graphics/nvn/tests/rscale_math_probe.py`，1280×720 输入请求 2：期望 2560×1440 → 基线 1280×720；改后 2560×1440。11 项配置、尺寸、矩形与边界检查通过。分别恢复旧上限或旧开启条件，1.5 / 2 判据均失败。没有运行 Metal GPU、iOS 编译或真机画面测试，不据此声称游戏已支持 2x。
+          +**做法**：仅迁移既有 12 个渲染及回归测试文件；完整源码输入声明按新版已跟踪根路径重建，保留闭包与源码身份检查。默认仍 1X，不改变宽屏或 shader ABI。
           +
-          +**做法**：上限 2、非 1 开启，保留既有纹理筛选与回退。已缩放纹理不能按游戏坐标局部 CPU 上传；初次缩放和后续宽屏增长均在分配前检查引擎既有 16384 尺寸上限。相应 GPU 回归已补充，待 Apple Silicon 宿主执行。
-          +
-          +## 私有云构建：已出壳后被访问时间输入检查挡住
-          +
-          +**现象**：2026-11-11 GitHub Actions `43051586883`，macOS 27.0.1 / Xcode 27.1，2x 源码快照 `db2f84398f0a22c057decc37496eec1d126195e4`。Shell `82f5c81c2aba1f89` 已封出 42 文件，随后闭包记录报 3073 个表外读取，样例含 AGENTS.md、README.md、Android 源码。日志没有文件读取进程追踪，尚不能确认具体读取者。
-          +
-          +**机制与做法**：访问时间观察覆盖了精简依赖表之外的文件。此私有构建改用保守的完整源码输入声明：35 个根文件 / 目录全部记「入」，任何已提交文件变化都进入 Shell 编号，接受文档变化也需重出壳的代价。没有把未知依赖记成无关、关闭检查或改用仅建议模式；仍核闭包、产物内容与配套源码身份。仅适用于此固定源码云构建，不声称是上游最小依赖表。
-          +
-          +**实验数据（期望 → 真结果）**：Windows 控制访问时间的生产 checker 测试（非 APFS 读取者复现）：模拟三个已报告路径与两个原有输入，旧表期望放行 → 退出 1 点名三个路径；新表 → 退出 0。再加入未声明的新根文件 → 退出 1；不是无条件放行。新表覆盖全部已跟踪源码。实际 macOS 出壳收尾仍待新工作流验证。
-          +
-          +## 私有 2x 试验：IMAGE 能力标记拒绝目标、首次访问回退与会话倍率缓存
-          +
-          +**现象与根因**：iPhone18,2 / iOS 26.5.2，源码快照 `242a5c917` 的用户诊断，UI 与后端均报告 2，首个 2x 游戏会话的 5776 条上屏来源记录仍为 1280×720。筛选日志显示 960×540 的颜色 / 深度目标（标志 0xc，COMPRESSIBLE|IMAGE）因 IMAGE 被拒绝；没有「存储缩放到」记录。这些是阶段记录，不等于唯一帧数。上限修订没有覆盖候选规则；静态 `g_rs` 也没有在游戏会话退出时重置。
-          +
-          +**做法**：参考 nxnative PR #1716 的按实际用途判定思路（该 PR 未合并，不作为真机成功证据），候选允许 IMAGE、DISPLAY 及符合条件的深度目标，继续拒绝线性、视频、稀疏与不支持的格式 / 尺寸。使用 S2Arm 既有双轴倍率 ABI：精确片元只读图像可缩放；图像写入、原子、非片元或没有精确映射的访问，在编码前处理根存储，先落地旧遍的清除再退回。合法 ID 0 和动态池纳入预检查；几何合成绘制跳过重复预检查，避免在 lane 2 flush 自己的绘制段。会话结束清理倍率、队列和支持缓冲代号。未改变宽屏策略、着色器 ABI 或资源格式。
-          +
-          +**实验数据（期望 → 真结果）**：2026-11-12 Windows x64 / GCC，在 `09fe7c2` 上修改。生产 C 旗标判据 10 项：旧代码期望放行 IMAGE 颜色 / 深度、DISPLAY 及无压缩标记深度 → 四项失败；修改后 10/10。访问判据 9 项：只读且有精确元数据的 IMAGE 期望保留缩放 → 旧规则拒绝；修改后 9/9。生产 draw 入口前缀四种开关 / 递归组合 → 4/4；移除递归保护后，对应判据失败。原标量 11 项加会话设定 2→1→2 → 全过；只移除设定缓存重置后中间值仍为 2，判据失败。四类负对照均在隔离副本执行并恢复后复绿，不修改生产树。
-          +
-          +**射程**：CPU 探针只覆盖实际提取的标量、旗标、访问判断和 draw 入口前缀。新增 Metal 用例覆盖 IMAGE 同遍颜色 / 深度、DISPLAY、首次访问前回退、打开的渲染遍、40 个计算绑定、ID 0、sRGB 视图及真实会话切换，但本机没有运行其编译或 GPU 测试；完整几何流水线、翻译器与 iPhone 游戏画面仍待验证。用途回退可能让某些游戏继续保持原尺寸，不能仅凭这些 CPU 读数宣称游戏已实现 2x。
+          +**读数**：Windows x64 / GCC，候选规则 10 项在原版有 4 项失败；迁移后标量及会话 12 项、候选 10 项、访问及绘制前缀 13 项均通过。GPU 与 iPhone 画质、性能和长时间稳定性没有在本机验证。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          index ea5e117..f8d1b57 100644
+          index 84ca738..49444ef 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
           +++ b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          @@ -4166,9 +4166,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
+          @@ -4204,9 +4204,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
                                    if (nh[k] != pk->ph[k]) changed = 1; else bits[k >> 6] &= ~(1ull << (k & 63));   // bits now: pages whose bytes changed
                                }
                                if (!changed) { pk->stamp = st; pk->seen = nvn_dirty_now(); clean = 1; g_pkg_same++; }
@@ -242,7 +143,7 @@ jobs:
                                    rect_list L = {0}; int up = 0;
                                    for (long k = 0; k < np; k++) if (bits[k >> 6] >> (k & 63) & 1) {
                                        if (gens[k] > pk->pgpu[k]) { const uint8_t *lo; size_t m; page_span(t, (size_t)k, &lo, &m); tex_bytes_rects(t, (uint64_t)(lo - t->mem), (uint64_t)(lo - t->mem) + m, rect_add, &L); up = 1; }
-          @@ -4850,6 +4850,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
+          @@ -4898,6 +4898,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
                int scaled = rs_state(base) == RS_SCALED; NSUInteger cw = extent.canvas.width, ch = extent.canvas.height;
                r = extent.physical.width; rh = extent.physical.height;
                const char *why = tex_widen_why(t);
@@ -250,7 +151,7 @@ jobs:
                if (why) {   // registered as widenable because the widened drawing fits (see tex_widen_why): drawn at its own width, a viewport past it is a red line (draw)
                    { static uint64_t seen[32]; static int ns; int k = 0; while (k < ns && seen[k] != t->serial) k++;   // one line per storage, with the reason
                      if (k == ns && ns < 32) { seen[ns++] = t->serial; MLOG("widen: render target ser=%llu %lux%lu storage not widened (%s): drawn at its own width; a viewport past it is a red line", (unsigned long long)t->serial, (unsigned long)base.width, (unsigned long)base.height, why); } }
-          @@ -9706,7 +9707,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -9775,7 +9776,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                            int tid = ubo_tex_id(ubo_handle(nvn_stage, reg, 8 * k)); if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) tid = -1;   // as for the samplers: other data, not a handle
                            void *tv = NULL; uint64_t trid = tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
                            if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }   // a handle the shader does not pick here may be another kind
@@ -259,7 +160,7 @@ jobs:
                            if (bl && tid >= 0) PD("B %llu st%d texu [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
                            slots[aid + k] = trid;
                            USE(t, MTLResourceUsageRead);
-          @@ -9750,7 +9751,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -9819,7 +9820,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                        if (t && b->dpf == NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != NVN_DPF_FLOAT) { uint64_t r2 = 0; id<MTLTexture> v = tex_float_fit(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_float_fit
                        if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_alpha_red(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_alpha_red
                        size_abi_texture(sh, nvn_stage, b, tid, size_view, t);
@@ -268,7 +169,7 @@ jobs:
                        if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; }
                        slots[aid] = trid;
                        USE(t, MTLResourceUsageRead);
-          @@ -9775,7 +9776,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -9844,7 +9845,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                        if (t && b->rw && tid < g_ntreg && g_treg[tid].ok) gpw_mark_view(&g_treg[tid].t, &g_treg[tid].v, g_treg[tid].has_v, 1);   // the shader stores to it: its guest bytes go stale (gpw_mark; a load-only image is not)
                        if (t && b->rw && tid < g_ntreg && g_treg[tid].ok) wd_flat_written(g_treg[tid].t.serial);   // S2Arm widen: its content changes, so the horizontal-detail measurement no longer holds
                        size_abi_texture(sh, nvn_stage, b, tid, size_view, t);
@@ -277,7 +178,7 @@ jobs:
                        if (!t) { t = dummy_img(b->dtt, b->dpf, b->atomic_image); trid = t.gpuResourceID._impl; }   // Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
                        slots[aid] = trid;
                        USE(t, MTLResourceUsageRead | MTLResourceUsageWrite);
-          @@ -9815,7 +9816,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -9884,7 +9885,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; }
                            }
                            if (bl && tv) PD("B %llu st%d texd [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
@@ -286,7 +187,7 @@ jobs:
                            slots[aid + k] = trid;
                            USE(t, MTLResourceUsageRead);
                        }
-          @@ -9832,7 +9833,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -9901,7 +9902,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                            int tid = (int)(c2_handle(nvn_stage, b->off + 8u * k) & 0xfffff);
                            void *tv = NULL; uint64_t trid = tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
                            if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }   // an element the shader does not pick here may be another kind
@@ -295,7 +196,7 @@ jobs:
                            if (bl && tv) PD("B %llu st%d texa [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
                            slots[aid + k] = trid;
                            USE(t, MTLResourceUsageRead);
-          @@ -13117,6 +13118,11 @@ static int gmem_uses(NvShader *s) {
+          @@ -13200,6 +13201,11 @@ static int gmem_uses(NvShader *s) {
            static void gmem_count_draw(NvProg *pr) { g_gmem_draws_all++; for (int i = 0; i < 5; i++) if (gmem_uses(pr->sh[i])) { g_gmem_draws++; break; } }
            
            static void draw(const p_draw *dw, const p_draw_idx *di) {
@@ -307,7 +208,7 @@ jobs:
                if (dw && dw->prim == DM_PRIM_MESH_TASKS && !g_mtk.on) { mesh_tasks_draw(dw); return; }   // NVN2 task / mesh draw: binds its stages and comes back with its pixel stage (nvn_geometry.inc)
                g_udc_precise = 0;   // only this draw's own udc_note_draw may cover its encode (a draw that returned without encoding leaves no stale cover)
                g_udc_lmap = NULL; g_udc_fsfn = 0;   // the output map is this draw's own too: the one a previous (on-chip read / merged) draw used must not judge the next pass's lookahead (pass_color_unwritten) or a geometry / tessellation draw's writes (11-06 TotK: tiled lights black outside the lit tiles)
-          @@ -13564,10 +13570,10 @@ static void dispatch(const p_dispatch *dp) {
+          @@ -13648,10 +13654,10 @@ static void dispatch(const p_dispatch *dp) {
                    mtl_sub_fill(u->addr + at, 4, cs->rf.first[i].value);
                }
                if (g_nubd && ubd_conflict_cs(cs, dp->ind)) { g_ubd_conflicts++; ubd_land(); }   // see ubd_conflict_cs
@@ -319,7 +220,7 @@ jobs:
                tba_prepare(cs, nil, nil, nil, nil, 1);   // #309: as for draws (see tba_ent)
                uint32_t gx = (uint32_t)dp->x, gy = (uint32_t)dp->y; wd_dispatch(cs, &gx, &gy, dp->ind != 0);   // S2Arm widen: images it writes widened, X groups to the widened width, compute constants rewritten (widen_glue.inc)
                int own = dispatch_own();
-          @@ -15473,7 +15479,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+          @@ -15565,7 +15571,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                // S2Arm: a crop reaching past the source (10-28 Splatoon 3 direct full screen: the game sets a 2346x1080 crop for a few frames while the swap chain texture is still
                //   1920x1080) is shown as the part inside the source, 16:9 with black bars (pf_crop_fit), instead of dropping the frame with "present crop out of bounds";
                //   once the source covers the crop it is used as given again. Everything below (present, grab, screenshots, fit check, AA) takes the fitted crop
@@ -1153,19 +1054,15 @@ jobs:
           +    return 0;
           +} }
           diff --git a/pack/stage_inputs/shell.tsv b/pack/stage_inputs/shell.tsv
-          index a045f96..c590623 100644
+          index 9dac75f..ce12bed 100644
           --- a/pack/stage_inputs/shell.tsv
           +++ b/pack/stage_inputs/shell.tsv
-          @@ -1,223 +1,41 @@
+          @@ -1,229 +1,37 @@
           -# 预编壳输入表（pack/shell_build.sh make ios 出壳实际读到的仓库文件；壳编号 = 「入」在 HEAD 上的对象号指纹，pack/shell/manifest.py inputs_key）。
           -#   生成：缓存都指空目录冷出壳，S2A_SHELL_CLOSURE_SUGGEST=<文件> bash pack/shell_build.sh <壳目录>；之后每次出壳都核（pack/shell/closure.py check），读到表外文件即红
           -#   iOS 游戏库界面（runtime/build.mk S2A_SHELLUI）：本表有「入	shell」行 = 出壳编进库界面（pack/shell_build.sh 只按这行定开关）；11-07 起带上（多款容器要库界面；单款包不调库界面，弱链接不影响）
-          +# 私有云端 2x 构建：保守输入闭包，整份固定源码均参与 Shell 编号。
-          +# 2026-11-11 run 43051586883：已产出 42 文件，收尾观察到 3073 个表外文件（含文档、Android 源码）。
-          +# 访问时间无法区分编译依赖与构建工具的仓库扫描；这里声明完整源码，不忽略任何观察到的已跟踪输入。
-          +# 每个根目录的 Git tree 对象覆盖其全部已提交子项；根文件用 blob 对象。文档变化也会换 Shell 编号。
-          +# 仍使用上游 closure.py check、manifest.py 的内容校验和配套源码对号；没有关闭检查或改成仅建议。
-          +# 入 shell 仍保证构建游戏库界面。此表是保守的出壳依赖，不声称每个文件都被编译进二进制。
+          +# Private fixed-source CI: all tracked source roots are build inputs.
+          +# Every source change affects the Shell identity; closure checks remain enabled.
           +入	.clang-format
            入	.editorconfig
           +入	.gitattributes
@@ -1259,6 +1156,7 @@ jobs:
           -入	graphics/nvn/host
           -入	graphics/nvn/host_adapt.m
           -入	graphics/nvn/lib_pack.inc
+          -入	graphics/nvn/lib_pack_core.inc
           -入	graphics/nvn/texture_extent.inc
           -入	graphics/nvn/third_party/bcdec/bcdec.h
           -入	graphics/nvn/third_party/vulkan-headers
@@ -1336,6 +1234,7 @@ jobs:
           -入	pack/contracts/target.v1.schema.json
           -入	pack/contracts/validate.py
           -入	pack/display_name.py
+          -入	pack/jobs/errors.py
           -入	pack/pkg_srcs.py
           -入	pack/shell/manifest.py
           -入	pack/shell_build.sh
@@ -1352,10 +1251,13 @@ jobs:
           +入	runtime
           +入	services
            入	shell
+          -入	launchers/macos/adapter/Sources/S2ArmAppleAdapter/Resources/Localizable.json
           -入	launchers/shared/SaveSync
           -入	platform/apple/plat_apple.c
           -入	platform/build.mk
           -入	launchers/macos/build.mk
+          -入	launchers/shared/experience.v1.json
+          -入	launchers/shared/experience_strings.py
           -入	platform/plat.h
           -入	platform/plat_asm.h
           -入	compat
@@ -1411,6 +1313,7 @@ jobs:
           -不	tests/rewriter_api_test.c
           -不	tests/sync_contract_litmus.c
           -不	tests/sync_publish_litmus.c
+          -不	tools/dotnet_lock.c
           -不	tools/pipeline_timing.m
           +入	skills
           +入	tests
@@ -1469,15 +1372,15 @@ jobs:
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- 'docs/superpowers/plans/2026-11-12-render-scale.md' 'docs/superpowers/specs/2026-11-12-render-scale-design.md' 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/gfx/nvn/nvn_rscale.inc' 'graphics/nvn/gfx/nvn/nvn_rscale_ops.inc' 'graphics/nvn/gfx/nvn/nvn_session.inc' 'graphics/nvn/tests/rscale_access_probe.py' 'graphics/nvn/tests/rscale_math_probe.py' 'graphics/nvn/tests/rscale_policy_probe.py' 'graphics/nvn/tests/t_nvn_pkg_gpu_write.m' 'graphics/nvn/tests/t_nvn_rscale.m' 'graphics/nvn/tests/t_nvn_rscale_access.m' 'pack/stage_inputs/shell.tsv' 'runtime/tests/mk/nvn_pkg_gpu_write.mk' 'runtime/tests/mk/nvn_rscale.mk'
+          git add -- 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/gfx/nvn/nvn_rscale.inc' 'graphics/nvn/gfx/nvn/nvn_rscale_ops.inc' 'graphics/nvn/gfx/nvn/nvn_session.inc' 'graphics/nvn/tests/rscale_access_probe.py' 'graphics/nvn/tests/rscale_math_probe.py' 'graphics/nvn/tests/rscale_policy_probe.py' 'graphics/nvn/tests/t_nvn_pkg_gpu_write.m' 'graphics/nvn/tests/t_nvn_rscale.m' 'graphics/nvn/tests/t_nvn_rscale_access.m' 'pack/stage_inputs/shell.tsv' 'runtime/tests/mk/nvn_pkg_gpu_write.mk' 'runtime/tests/mk/nvn_rscale.mk'
           tree="$(git write-tree)"
-          test "$tree" = "33af0fd691669f0c93feba74a17f0b29a979f8b5"
+          test "$tree" = "c75b0ad0e6d09cfff6238c295733a27c8af76169"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
           export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
-          export GIT_AUTHOR_DATE='2026-11-11T16:00:00Z' GIT_COMMITTER_DATE='2026-11-11T16:00:00Z'
-          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.2.9 experimental 2x; upstream 77b436b57b0739447a1db27718085d34840e9917')"
+          export GIT_AUTHOR_DATE='2026-11-12T13:00:00Z' GIT_COMMITTER_DATE='2026-11-12T13:00:00Z'
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.3.1 experimental 2x; upstream 71a1686ed06abb8d725b53d6d6489fc023764ae6')"
           git checkout -b s2arm-2x-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
           python3 pack/shell/closure.py pyimports
@@ -1622,8 +1525,8 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.2.9 experimental 2x revision 3; CI 3.1; default 1x"
-            echo "Upstream baseline: 77b436b57b0739447a1db27718085d34840e9917"
+            echo "Custom build: S2Arm 0.3.1 experimental 2x revision 3; CI 3.1; default 1x"
+            echo "Upstream baseline: 71a1686ed06abb8d725b53d6d6489fc023764ae6"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
             echo "iPhone gameplay and visual quality are not verified by this workflow."
@@ -1640,15 +1543,15 @@ jobs:
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
-          printf '0.2.9\n' > "$output/artifact/version.txt"
+          printf '0.3.1\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
           shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-Shell-2x from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Shell build completed. Download S2Arm-0.3.1-Shell-2x from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-Shell-2x
+          name: S2Arm-0.3.1-Shell-2x
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0
@@ -1682,7 +1585,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-build-logs
+          name: S2Arm-0.3.1-build-logs
           path: ${{ runner.temp }}/s2arm-output/logs/
           if-no-files-found: warn
           retention-days: 7

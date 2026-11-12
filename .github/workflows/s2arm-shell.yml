@@ -3,7 +3,7 @@
 # Self-contained: the patch and matching-source packaging are included below.
 # Revision 3.1: GPU eligibility checks unified memory, Metal4 and residency creation.
 # R3 render-scale behavior ported to official v0.3.1; full source / closure checks stay enabled.
-name: S2Arm 0.3.1 Shell 2x (macOS)
+name: S2Arm 0.3.1 Shell 2x PSOFix (macOS)
 
 on:
   workflow_dispatch:
@@ -1389,6 +1389,299 @@ jobs:
           python3 graphics/nvn/tests/rscale_policy_probe.py --cc clang 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/rscale-policy.log"
           python3 graphics/nvn/tests/rscale_access_probe.py --cc clang 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/rscale-access.log"
 
+      - name: Fix runtime-only prewarm and run Foundation red-green regression
+        working-directory: source
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/s2arm-output/logs"
+          git show HEAD:graphics/nvn/gfx/nvn/nvn_mtl.m > "$RUNNER_TEMP/nvn_mtl-before-prewarm.m"
+          cat > "$RUNNER_TEMP/s2arm-prewarm.patch" <<'S2ARM_PREWARM_PATCH'
+          diff --git a/docs/坑记录.md b/docs/坑记录.md
+          index 85c2c0c..e636149 100644
+          --- a/docs/坑记录.md
+          +++ b/docs/坑记录.md
+          @@ -2408,3 +2408,11 @@ Apple 芯片 Mac（macOS 27.2、Python 3.12.16），以 `9749debe` 为基线，
+           **做法**：仅迁移既有 12 个渲染及回归测试文件；完整源码输入声明按新版已跟踪根路径重建，保留闭包与源码身份检查。默认仍 1X，不改变宽屏或 shader ABI。
+           
+           **读数**：Windows x64 / GCC，候选规则 10 项在原版有 4 项失败；迁移后标量及会话 12 项、候选 10 项、访问及绘制前缀 13 项均通过。GPU 与 iPhone 画质、性能和长时间稳定性没有在本机验证。
+          +
+          +## 运行时着色器包没有种子清单，不能连手机自录清单一起跳过（2026-11-12，私有 0.3.1 构建）
+          +
+          +**现象**：iPhone18,2 / iOS 26.5.2，源码 965e079225ff，1X / Metal 3，一次战斗切换有声音但画面停住，用户确认等待后恢复。两帧总耗时分别为 13075.8 / 5619.1 ms，其中管线编译为 13028.3 / 5605.8 ms，GPU 执行约 20 ms。该局记录空的 runtime-only 库、缺少 pso_manifest.tsv、256 次管线创建、0 次归档命中和 0 次写入；这些是修前一局的读数，不是修后性能结果。
+          +
+          +**根因**：warm_paths 已收集 pso_user.tsv，却因随包种子不存在直接返回 nil。运行时包允许没有种子；warm_stale / shader_build 原本能校验并读取同链同翻译器指纹的手机 MSL，warm_task 原本能把预热结果交给后台归档写入，此入口阻止了这些路径。
+          +
+          +**做法与射程**：种子与手机清单独立收集，保留显式清单和 off 语义；两者皆无才返回 nil。新增不依赖 GPU 的 Foundation 文件/配置回归和两进程 Metal 写入/命中/输出校验夹具。Windows 不能执行 Foundation / Metal，云构建须先证明旧入口四个 user-only 用例为红，再证明修后为绿；Metal 缺硬件明确未测。此改动不重建 game.img、不改翻译器或 ABI，首次全新场景编译和真机延迟改善仍需实测。
+          diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
+          index 49444ef..85fe14c 100644
+          --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
+          +++ b/graphics/nvn/gfx/nvn/nvn_mtl.m
+          @@ -8686,12 +8686,15 @@ static NSArray<NSString *> *warm_paths(int say) {
+               if (e && !strcmp(e, "off")) return nil;
+               if (e && *e) return @[@(e)];
+               NSString *seed = [shmap_path().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"];
+          -    NSMutableArray<NSString *> *all = [NSMutableArray arrayWithObject:seed];
+          +    // Runtime-only packages have no seed. Their device-recorded list still warms
+          +    // the fallback MSL and feeds the archive writer on subsequent launches.
+          +    NSMutableArray<NSString *> *all = [NSMutableArray array];
+          +    if ([NSFileManager.defaultManager fileExistsAtPath:seed]) [all addObject:seed];
+          +    else if (say) MLOG("pipeline prewarm: no seed list: %s; checking this device's user list", seed.UTF8String);
+               NSString *user = pso_user_path();
+               if (user && [NSFileManager.defaultManager fileExistsAtPath:user]) [all addObject:user];
+               else if (say) MLOG("pipeline prewarm: this device's user list %s%s", user ? "does not exist yet: " : "has no path (neither DM_PSO_USER nor DM_SAVE is set)", user ? user.UTF8String : "");
+          -    if (![NSFileManager.defaultManager fileExistsAtPath:seed]) { if (say) MLOG("【红】 pipeline prewarm: seed list does not exist: %s", seed.UTF8String); return nil; }
+          -    return all;
+          +    return all.count ? all : nil;
+           }
+           // Tell the front end at once that the first frame will wait for the prewarm (10-30 device line, Monster Hunter Rise cold start mhrise_1030172905_1: the game's first present, 0.96 s, came
+           //   before its first submission, where the shader map loads lazily and the prewarm runs, so the loading page was taken down at that present and the 15 s prewarm showed black).
+          diff --git a/graphics/nvn/tests/t_nvn_warm_runtime.m b/graphics/nvn/tests/t_nvn_warm_runtime.m
+          new file mode 100644
+          index 0000000..a95d272
+          --- /dev/null
+          +++ b/graphics/nvn/tests/t_nvn_warm_runtime.m
+          @@ -0,0 +1,66 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +// Runtime-only package: empty map, no seed, device MSL + JSON and user C/S rows.
+          +// Two processes: write warms and persists; read must hit the on-disk archive.
+          +// Real production functions, no game assets. Does not measure gameplay latency.
+          +#include "../gfx/nvn/nvn_mtl.m"
+          +#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
+          +const char *s2a_dsh_xfp(void) { return "0123456789abcdef"; }
+          +int main(int argc, char **argv) { @autoreleasepool {
+          +    CHECK(argc == 3 && (!strcmp(argv[1], "write") || !strcmp(argv[1], "read")));
+          +    alarm(120); setvbuf(stdout, NULL, _IOLBF, 0);
+          +    int writing = !strcmp(argv[1], "write");
+          +    NSString *root = @(argv[2]), *fb = [root stringByAppendingPathComponent:@"fallback"];
+          +    NSString *user = [root stringByAppendingPathComponent:@"pso_user.tsv"];
+          +    NSString *key = @"1234567890abcdef_b", *stale = @"fedcba0987654321_b";
+          +    NSFileManager *fm = NSFileManager.defaultManager;
+          +    CHECK([fm createDirectoryAtPath:fb withIntermediateDirectories:YES attributes:nil error:nil]);
+          +    g_shmap_path = [root stringByAppendingPathComponent:@"shader_map.tsv"];
+          +    g_msl_dir = [root stringByAppendingPathComponent:@"b-" DMSH_CHAIN];
+          +    CHECK([fm createDirectoryAtPath:g_msl_dir withIntermediateDirectories:YES attributes:nil error:nil]);
+          +    g_shmap = [NSMutableDictionary dictionary];
+          +    setenv("DM_NVN_SHMAP", g_shmap_path.UTF8String, 1);
+          +    setenv("DM_MSL_FALLBACK", fb.UTF8String, 1); setenv("DM_PSO_USER", user.UTF8String, 1);
+          +    unsetenv("DM_PSO_MANIFEST"); setenv("DM_PSO_ARCHIVE", "1", 1);
+          +    if (writing) {
+          +        CHECK([@"" writeToFile:g_shmap_path atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+          +        NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\nkernel void main0(device uint *o [[buffer(0)]], uint i [[thread_position_in_grid]]) { o[i] = i + 7; }\n";
+          +        CHECK([src writeToFile:[fb stringByAppendingPathComponent:[key stringByAppendingString:@".metal"]] atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+          +        for (NSString *k in @[key, stale]) {
+          +            NSDictionary *j = @{@"chain": @DMSH_CHAIN, @"xfp": [k isEqual:key] ? @(s2a_dsh_xfp()) : @"old-translator", @"route": @"B", @"stage": @"cs", @"entry": @"main0", @"bindings": @[]};
+          +            CHECK([[NSJSONSerialization dataWithJSONObject:j options:0 error:nil] writeToFile:[fb stringByAppendingPathComponent:[k stringByAppendingString:@".json"]] atomically:YES]);
+          +        }
+          +        CHECK([@"S\t1234567890abcdef_b\t5\nC\t1234567890abcdef_b\nC\tfedcba0987654321_b\n" writeToFile:user atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+          +    }
+          +    CHECK(![fm fileExistsAtPath:[root stringByAppendingPathComponent:@"pso_manifest.tsv"]]);
+          +    NSArray *paths = warm_paths(1); CHECK([paths isEqualToArray:@[user]]);
+          +    g_dev = MTLCreateSystemDefaultDevice(); CHECK(g_dev);
+          +    long lines = 0; NSArray<WarmTask *> *tasks = warm_parse(paths, &lines);
+          +    CHECK(lines == 2 && tasks.count == 2 && g_warm_skip_stale == 1);
+          +    for (WarmTask *t in tasks) warm_task(t);
+          +    CHECK(g_warm_shaders == 1 && g_warm_cps == 1 && g_warm_done == 2);
+          +    WarmItem *compute = nil;
+          +    for (WarmItem *it in g_warm_items) if (it->kind == 2) compute = it;
+          +    CHECK(compute && compute->shader && compute->object && [compute->key isEqual:key]);
+          +    // Run the warmed pipeline, independently check its output, not just non-nil.
+          +    id<MTLCommandQueue> queue = [g_dev newCommandQueue]; CHECK(queue);
+          +    id<MTLBuffer> out = [g_dev newBufferWithLength:sizeof(uint32_t) options:MTLResourceStorageModeShared]; CHECK(out);
+          +    *(uint32_t *)out.contents = 0;
+          +    id<MTLCommandBuffer> cb = [queue commandBuffer]; id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+          +    [enc setComputePipelineState:compute->object]; [enc setBuffer:out offset:0 atIndex:0];
+          +    [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)]; [enc endEncoding];
+          +    [cb commit]; [cb waitUntilCompleted]; CHECK(cb.status == MTLCommandBufferStatusCompleted && *(uint32_t *)out.contents == 7);
+          +    // The archive writer runs independently; wait with a bound before exiting.
+          +    for (int i = 0; i < 10000; i++) {
+          +        pthread_mutex_lock(&g_par_mu); int busy = g_par_writer; pthread_mutex_unlock(&g_par_mu);
+          +        if (!busy) break;
+          +        usleep(10000);
+          +    }
+          +    pthread_mutex_lock(&g_par_mu); int busy = g_par_writer; pthread_mutex_unlock(&g_par_mu);
+          +    CHECK(!busy && g_par_write_failed == 0);
+          +    if (writing) CHECK(g_par_written == 1 && g_par_hits == 0 && g_par_misses == 1);
+          +    else CHECK(g_par_hits == 1 && g_par_misses == 0 && g_par_written == 0);
+          +    CHECK(par_archive_for(par_ckey(compute->shader, 0)));
+          +    printf("PASS runtime-only %s: fallback loaded, stale fingerprint rejected, GPU output 7, hits %llu / compiled %llu / written %llu\n", argv[1], (unsigned long long)g_par_hits, (unsigned long long)g_par_misses, (unsigned long long)g_par_written);
+          +    return 0;
+          +} }
+          diff --git a/graphics/nvn/tests/warm_paths_fixture.m b/graphics/nvn/tests/warm_paths_fixture.m
+          new file mode 100644
+          index 0000000..8fa082b
+          --- /dev/null
+          +++ b/graphics/nvn/tests/warm_paths_fixture.m
+          @@ -0,0 +1,51 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +// Real filesystem fixtures for production list selection. No Metal initialization.
+          +#import <Foundation/Foundation.h>
+          +#include <stdio.h>
+          +#include <stdlib.h>
+          +#include <string.h>
+          +#define MLOG(...) do { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while (0)
+          +static NSString *shmap_path(void) { return @(getenv("DM_NVN_SHMAP")); }
+          +/* PRODUCTION_FUNCTIONS */
+          +static unsigned checks, failures;
+          +static void expect(const char *name, NSArray *want, int say) {
+          +    NSArray *got = warm_paths(say);
+          +    int ok = want ? [got isEqualToArray:want] : got == nil;
+          +    checks++; failures += !ok;
+          +    printf("%s %s\n", ok ? "PASS" : "FAIL", name);
+          +}
+          +static void put(NSString *path) {
+          +    if (![@"# fixture\n" writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil]) abort();
+          +}
+          +int main(void) { @autoreleasepool {
+          +    char tmp[] = "/tmp/s2a-warm-paths-XXXXXX";
+          +    if (!mkdtemp(tmp)) return 2;
+          +    NSString *root = @(tmp), *seed = [root stringByAppendingPathComponent:@"pso_manifest.tsv"];
+          +    NSString *user = [root stringByAppendingPathComponent:@"pso_user.tsv"];
+          +    NSString *map = [root stringByAppendingPathComponent:@"shader_map.tsv"];
+          +    NSString *explicit = [root stringByAppendingPathComponent:@"chosen.tsv"];
+          +    setenv("DM_NVN_SHMAP", map.UTF8String, 1); unsetenv("DM_PSO_MANIFEST");
+          +    setenv("DM_PSO_USER", user.UTF8String, 1); unsetenv("DM_SAVE"); put(map);
+          +    expect("no-lists", nil, 1);
+          +    put(user);
+          +    expect("user-only/silent", @[user], 0);
+          +    expect("user-only/logged", @[user], 1);
+          +    put(seed);
+          +    expect("seed-then-user", @[seed, user], 1);
+          +    [NSFileManager.defaultManager removeItemAtPath:user error:nil];
+          +    expect("seed-only", @[seed], 1);
+          +    unsetenv("DM_PSO_USER"); expect("seed/no-user-path", @[seed], 0);
+          +    put(user); [NSFileManager.defaultManager removeItemAtPath:seed error:nil];
+          +    setenv("DM_SAVE", [root stringByAppendingPathComponent:@"save"].UTF8String, 1);
+          +    expect("save-derived-user", @[user], 0);
+          +    setenv("DM_PSO_MANIFEST", "", 1); expect("empty-override-user", @[user], 0);
+          +    setenv("DM_PSO_MANIFEST", "off", 1); expect("off/user-present", nil, 1);
+          +    put(seed); expect("off/both-present", nil, 0);
+          +    setenv("DM_PSO_MANIFEST", explicit.UTF8String, 1);
+          +    expect("explicit-missing-does-not-silently-fallback", @[explicit], 0);
+          +    put(explicit); expect("explicit-only", @[explicit], 1);
+          +    [NSFileManager.defaultManager removeItemAtPath:root error:nil];
+          +    printf("Foundation list selection: %u checks, %u failures; Metal and gameplay NOT tested\n", checks, failures);
+          +    return failures ? 1 : 0;
+          +} }
+          diff --git a/graphics/nvn/tests/warm_paths_probe.py b/graphics/nvn/tests/warm_paths_probe.py
+          new file mode 100644
+          index 0000000..7e9215c
+          --- /dev/null
+          +++ b/graphics/nvn/tests/warm_paths_probe.py
+          @@ -0,0 +1,66 @@
+          +#!/usr/bin/env python3
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Run the production warm_paths on Foundation, without a Metal device.
+          +
+          +The fixture only substitutes shmap_path (a game path) and logging. Both
+          +warm_paths and pso_user_path are copied verbatim from the selected source.
+          +--expect-old-bug accepts only the missing-seed/user-list regression failure.
+          +Windows can emit the translation unit for inspection; it cannot run Foundation.
+          +"""
+          +import argparse
+          +import pathlib
+          +import re
+          +import subprocess
+          +import sys
+          +import tempfile
+          +
+          +
+          +def function(source, signature):
+          +    start = source.index(signature)
+          +    # These two functions have no braces inside strings or comments.
+          +    opening = source.index("{", start)
+          +    depth = 0
+          +    for end in range(opening, len(source)):
+          +        depth += (source[end] == "{") - (source[end] == "}")
+          +        if depth == 0:
+          +            return source[start:end + 1]
+          +    raise ValueError(f"unterminated {signature}")
+          +
+          +
+          +def main():
+          +    ap = argparse.ArgumentParser(description=__doc__)
+          +    ap.add_argument("--source", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[1] / "gfx/nvn/nvn_mtl.m")
+          +    ap.add_argument("--emit", type=pathlib.Path)
+          +    ap.add_argument("--expect-old-bug", action="store_true")
+          +    args = ap.parse_args()
+          +    source = args.source.read_text(encoding="utf-8")
+          +    fixture = pathlib.Path(__file__).with_name("warm_paths_fixture.m").read_text(encoding="utf-8")
+          +    unit = fixture.replace("/* PRODUCTION_FUNCTIONS */", function(source, "static NSString *pso_user_path(void)") + "\n" + function(source, "static NSArray<NSString *> *warm_paths(int say)"))
+          +    if args.emit:
+          +        args.emit.write_text(unit, encoding="utf-8", newline="\n")
+          +        print(f"Emitted production Foundation fixture: {args.emit}; NOT EXECUTED")
+          +        return 0
+          +    if sys.platform != "darwin":
+          +        print("UNAVAILABLE: this test requires macOS Foundation; no Metal GPU is required.", file=sys.stderr)
+          +        return 77
+          +    with tempfile.TemporaryDirectory(prefix="s2a-warm-paths-") as temp:
+          +        root = pathlib.Path(temp)
+          +        src, exe = root / "probe.m", root / "probe"
+          +        src.write_text(unit, encoding="utf-8")
+          +        subprocess.run(["xcrun", "--sdk", "macosx", "clang", "-fobjc-arc", "-Wall", "-Wextra", str(src), "-framework", "Foundation", "-o", str(exe)], check=True)
+          +        result = subprocess.run([str(exe)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          +        print(result.stdout, end="")
+          +        failures = re.findall(r"^FAIL (.+)$", result.stdout, re.MULTILINE)
+          +        if args.expect_old_bug:
+          +            expected = {"user-only/silent", "user-only/logged", "save-derived-user", "empty-override-user"}
+          +            if result.returncode == 1 and set(failures) == expected:
+          +                print("PASS negative control: old missing-seed behavior rejects all four user-only cases")
+          +                return 0
+          +            print(f"FAIL negative control: unexpected exit {result.returncode} or failures {failures}")
+          +            return 1
+          +        return result.returncode
+          +
+          +
+          +if __name__ == "__main__":
+          +    raise SystemExit(main())
+          diff --git a/runtime/tests/mk/nvn_warm_runtime.mk b/runtime/tests/mk/nvn_warm_runtime.mk
+          new file mode 100644
+          index 0000000..7f85370
+          --- /dev/null
+          +++ b/runtime/tests/mk/nvn_warm_runtime.mk
+          @@ -0,0 +1,20 @@
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +NATIVE_TEST_OWN += nvn_warm_runtime
+          +ifeq ($(shell uname -s),Darwin)
+          +$(BUILD)/tests/t_nvn_warm_runtime: graphics/nvn/tests/t_nvn_warm_runtime.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
+          +	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
+          +	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \
+          +	  -o $@ graphics/nvn/tests/t_nvn_warm_runtime.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN) \
+          +	  -Wl,-rpath,@executable_path/nvn/widen $(NVN_TEST_WEAK) \
+          +	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
+          +	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
+          +.PHONY: native-test-nvn_warm_runtime
+          +native-test-nvn_warm_runtime: $(BUILD)/tests/t_nvn_warm_runtime
+          +	python3 graphics/nvn/tests/warm_paths_probe.py
+          +	@set -eu; tmp=$$(mktemp -d /tmp/s2a-warm-runtime.XXXXXX); \
+          +	  trap 'rm -rf "$$tmp"' EXIT; \
+          +	  $(BUILD)/tests/t_nvn_warm_runtime write "$$tmp"; \
+          +	  $(BUILD)/tests/t_nvn_warm_runtime read "$$tmp"
+          +TEST_TARGETS += native-test-nvn_warm_runtime
+          +endif
+          S2ARM_PREWARM_PATCH
+          git apply --check "$RUNNER_TEMP/s2arm-prewarm.patch"
+          git apply "$RUNNER_TEMP/s2arm-prewarm.patch"
+          # The regression must reject exactly the four old user-only cases.
+          # This runs on Foundation even when the runner has no usable Metal GPU.
+          python3 graphics/nvn/tests/warm_paths_probe.py --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/prewarm-negative.log"
+          python3 graphics/nvn/tests/warm_paths_probe.py 2>&1 | tee "$logs/prewarm-foundation.log"
+          git add -- 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/tests/t_nvn_warm_runtime.m' 'graphics/nvn/tests/warm_paths_fixture.m' 'graphics/nvn/tests/warm_paths_probe.py' 'runtime/tests/mk/nvn_warm_runtime.mk'
+          tree="$(git write-tree)"
+          test "$tree" = "64696c726c7fed659bc4f8eb2f526748d3ec3eff"
+          export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
+          export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
+          export GIT_AUTHOR_DATE='2026-11-12T15:00:00Z' GIT_COMMITTER_DATE='2026-11-12T15:00:00Z'
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.3.1 experimental 2x with runtime-only prewarm fix; upstream 71a1686ed06abb8d725b53d6d6489fc023764ae6')"
+          git checkout -B s2arm-2x-build "$snapshot"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          python3 pack/shell/closure.py pyimports
+          python3 pack/shell/closure.py csiblings
+          echo 'Foundation list selection: PASS (12 cases; baseline negative control). Metal archive roundtrip: pending. iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
+
       - name: Prepare Python dependencies and timezone sources
         working-directory: source
         run: |
@@ -1454,10 +1747,10 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo 'S2ARM_CI_REVISION=3.1-capability-gate'
+          echo 'S2ARM_CI_REVISION=3.1-prewarm-fix1'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
-          "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_rscale_access build/tests/t_nvn_pkg_gpu_write 2>&1 | tee "$logs/rscale-native-build.log"
+          "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_rscale_access build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"
           cat > "$RUNNER_TEMP/s2arm-metal-device.m" <<'METAL_DEVICE'
           #import <Foundation/Foundation.h>
           #import <Metal/Metal.h>
@@ -1496,15 +1789,18 @@ jobs:
           if [ "$device_status" -eq 77 ]; then
             echo 'Metal fixture compilation: PASS. GPU execution: SKIPPED (runner lacks required capabilities for the full Metal3/4 matrix; see rscale-device.log). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
             echo '::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.'
+            echo 'Foundation list selection: PASS (12 cases; baseline negative control). Metal archive roundtrip: COMPILED, EXECUTION SKIPPED (runner GPU capabilities). iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
           elif [ "$device_status" -ne 0 ]; then
             echo "::error::Metal device probe failed ($device_status)."
             exit "$device_status"
           else
             echo 'Metal fixture compilation: PASS. GPU execution: RUNNING.' > "$logs/rscale-gpu-status.txt"
-            "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_rscale native-test-nvn_pkg_gpu_write 2>&1 | tee "$logs/rscale-native-run.log"
+            "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_rscale native-test-nvn_pkg_gpu_write native-test-nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-run.log"
             echo 'Metal fixture compilation: PASS. GPU execution: PASS (Metal 3/4 synthetic storage, copy, readback and session checks). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
+            echo 'Foundation list selection: PASS (12 cases; baseline negative control). Metal runtime-only archive: PASS (two processes, write then hit, GPU output 7). iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
           fi
           cat "$logs/rscale-gpu-status.txt" >> "$GITHUB_STEP_SUMMARY"
+          cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build Shell with the upstream entry point
         working-directory: source
@@ -1525,10 +1821,12 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.3.1 experimental 2x revision 3; CI 3.1; default 1x"
+            echo "Custom build: S2Arm 0.3.1 experimental 2x revision 3 + runtime-only prewarm fix1; default 1x"
             echo "Upstream baseline: 71a1686ed06abb8d725b53d6d6489fc023764ae6"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
+            cat "$output/logs/prewarm-status.txt"
+            echo "Existing game.img is reused. Previously unseen pipelines may still compile at first use."
             echo "iPhone gameplay and visual quality are not verified by this workflow."
             echo "Source: https://github.com/jhaizhou-ops/S2Arm"
             git rev-parse HEAD
@@ -1541,17 +1839,19 @@ jobs:
           git bundle create "$output/artifact/S2Arm-source.bundle" refs/heads/s2arm-2x-build
           git bundle verify "$output/artifact/S2Arm-source.bundle"
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
+          cp "$RUNNER_TEMP/s2arm-prewarm.patch" "$output/artifact/s2arm-prewarm.patch"
+          cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
           printf '0.3.1\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-0.3.1-Shell-2x from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch s2arm-prewarm.patch prewarm-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
+          echo 'Shell build completed. Download S2Arm-0.3.1-Shell-2x-PSOFix from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.3.1-Shell-2x
+          name: S2Arm-0.3.1-Shell-2x-PSOFix
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0
@@ -1585,7 +1885,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.3.1-build-logs
+          name: S2Arm-0.3.1-PSOFix-build-logs
           path: ${{ runner.temp }}/s2arm-output/logs/
           if-no-files-found: warn
           retention-days: 7

@@ -1,14 +1,14 @@
 # Add this file to YOUR repository at .github/workflows/s2arm-shell.yml.
-# Experimental 2x rendering on pinned S2Arm 0.3.5; default remains 1x.
+# Experimental 2x rendering on pinned S2Arm 0.3.9; default remains 1x.
 # Self-contained: the patch and matching-source packaging are included below.
 # Revision 3.1: GPU eligibility checks unified memory, Metal4 and residency creation.
-# R3 render-scale behavior ported to official v0.3.5; full source / closure checks stay enabled.
-name: S2Arm 0.3.5 Shell 2x PSOFix (macOS)
+# R3 render-scale behavior ported to official v0.3.9; full source / closure checks stay enabled.
+name: S2Arm 0.3.9 Shell 2x PSOFix (macOS)
 
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/s2arm-035-2x']
+    branches: ['codex/s2arm-039-2x']
     paths: ['.github/workflows/s2arm-shell.yml']
 
 permissions:
@@ -44,11 +44,11 @@ jobs:
             echo "S2A_BUILD_CACHE=$RUNNER_TEMP/s2arm-cache/downloads"
           } >> "$GITHUB_ENV"
 
-      - name: Check out original S2Arm 0.3.5
+      - name: Check out original S2Arm 0.3.9
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: jhaizhou-ops/S2Arm
-          ref: 61aae40d2e3ead2685f299edd12bc7e266c5a81e
+          ref: a57079fa1d9a1af82fedbcdf545acd1426c57c16
           path: source
           fetch-depth: 0
           persist-credentials: false
@@ -109,29 +109,29 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "61aae40d2e3ead2685f299edd12bc7e266c5a81e"
+          test "$(git rev-parse HEAD)" = "a57079fa1d9a1af82fedbcdf545acd1426c57c16"
           git show HEAD:graphics/nvn/gfx/nvn/nvn_mtl.m > "$RUNNER_TEMP/nvn_mtl-before-prewarm.m"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
           diff --git a/docs/坑记录.md b/docs/坑记录.md
-          index 37881d5b..2a821d6b 100644
+          index e042328f..8e3a0881 100644
           --- a/docs/坑记录.md
           +++ b/docs/坑记录.md
-          @@ -2980,3 +2980,10 @@ t 的定义被当成只用一次整棵搬进两个槽位——两个槽位共享
-           **实验数据（期望 → 真结果）**：MacBook Pro M4 / 16 GB、macOS 26.7.1、main `19f92940`、J=5、热缓存，单独跑完整抽取。`rows.tsv` / `index.tsv` 修前修后一致 → 4 款都一致；CPU（user）0400486024DEC000 293 → 222 / 217 秒（2 轮），04007EF01F8AE000 273 → 217 秒，0400A3A01EE4C000 171 → 156 秒，0100F43008C44000 81 → 70 秒。
-           
-           **做法**：这三种盲搜和 `scan_streams` 同一口径，只对没被整文件解开的顶层文件做。单测 `graphics/tools/shbake/tests/t_whole_zstd_scan.py`。
+          @@ -3486,3 +3486,10 @@ t 的定义被当成只用一次整棵搬进两个槽位——两个槽位共享
+           **以后**：
+           - 「正式键晚算」和「要不要提前加载」是两件事，别让前者的跳过条件顺手把后者也跳掉。
+           - 这次只把最长那一下砍下来，慢帧总量三局里只有一局明显下降：一次长卡顿拆成了更多中等的，剩下的主要是渲染管线现编，读档时后台预取也在抢 CPU。
           +
           +
-          +## 私有 0.3.5 原比例 2X 与运行时预热补丁迁移（2026-11-13）
+          +## 私有 0.3.9 原比例 2X 与运行时预热补丁迁移（2026-11-14）
           +
-          +基线 61aae40d（v0.3.5）。上游仍限制 S2A_RES_SCALE 上限为 1，warm_paths 在没有随包种子时仍丢弃设备用户清单；沿用已验证的私有 0.3.2 补丁，保留官方着色器翻译、PSO 正常收局标记清理、计算屏障、纹理转换拷贝和自行签名导出等修改。默认 1X，原比例由关闭宽屏及游戏强制宽屏保持。没有新增游戏专用分支。
+          +基线 a57079fa（v0.3.9）。官方仍把 S2A_RES_SCALE 上限限制为 1，warm_paths 在随包种子不存在时仍提前返回；沿用私有 0.3.5 的候选纹理、访问降级和运行时用户清单预热补丁。三方合并保留 0.3.9 新增的句柄校验与纹理同步逻辑，不覆盖上游地址窗口、导入和安装修复。默认仍为 1X，原比例使用者关闭宽屏及游戏强制宽屏后选择 2X；没有新增游戏专用分支。
           +
-          +迁移的负对照使用原版候选表达式，COMPRESSIBLE|IMAGE、DISPLAY 和无压缩深度目标共 4 项失败；迁移后须通过标量/会话 12 项、候选 10 项、访问/绘制前缀 13 项与提取器 5 项。Foundation 12 项红绿及 Metal 原生夹具留给 macOS CI：始终编译，GPU 不具备能力时明确未执行。Windows 检查不证明 iPhone 画面或帧率。仅升级壳沿用玩家现有 kit 和资源，避免重新转换覆盖 MOD。
+          +Windows / GCC 负对照：原版候选表达式在 COMPRESSIBLE|IMAGE 颜色及深度、DISPLAY 颜色和无压缩标志深度共 4 项失败（10 项中 6 通过）；迁移后候选 10/10、标量及会话 12/12、访问及绘制入口 13/13、函数提取器 5/5 通过。Foundation 与 Metal 未在 Windows 执行，交由 macOS CI 运行前者、编译后者；原生 GPU 夹具仅在具备能力的 GPU 执行。以上不证明 iPhone 画面、帧率或闪退已解决。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          index 7347d736..8e727ae2 100644
+          index 5cf64d77..191649ea 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
           +++ b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          @@ -4270,9 +4270,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
+          @@ -4405,9 +4405,9 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
                                    if (nh[k] != pk->ph[k]) changed = 1; else bits[k >> 6] &= ~(1ull << (k & 63));   // bits now: pages whose bytes changed
                                }
                                if (!changed) { pk->stamp = st; pk->seen = nvn_dirty_now(); clean = 1; g_pkg_same++; }
@@ -143,7 +143,7 @@ jobs:
                                    rect_list L = {0}; int up = 0;
                                    for (long k = 0; k < np; k++) if (bits[k >> 6] >> (k & 63) & 1) {
                                        if (gens[k] > pk->pgpu[k]) { const uint8_t *lo; size_t m; page_span(t, (size_t)k, &lo, &m); tex_bytes_rects(t, (uint64_t)(lo - t->mem), (uint64_t)(lo - t->mem) + m, rect_add, &L); up = 1; }
-          @@ -4974,6 +4974,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
+          @@ -5107,6 +5107,7 @@ static int tex_widen(const tex_t *t, NSUInteger r, NSUInteger rh) {   // 1 = the
                int scaled = rs_state(base) == RS_SCALED; NSUInteger cw = extent.canvas.width, ch = extent.canvas.height;
                r = extent.physical.width; rh = extent.physical.height;
                const char *why = tex_widen_why(t);
@@ -151,7 +151,7 @@ jobs:
                if (why) {   // registered as widenable because the widened drawing fits (see tex_widen_why): drawn at its own width, a viewport past it is a red line (draw)
                    { static uint64_t seen[32]; static int ns; int k = 0; while (k < ns && seen[k] != t->serial) k++;   // one line per storage, with the reason
                      if (k == ns && ns < 32) { seen[ns++] = t->serial; MLOG("widen: render target ser=%llu %lux%lu storage not widened (%s): drawn at its own width; a viewport past it is a red line", (unsigned long long)t->serial, (unsigned long)base.width, (unsigned long)base.height, why); } }
-          @@ -8766,12 +8767,15 @@ static NSArray<NSString *> *warm_paths(int say) {
+          @@ -8930,12 +8931,15 @@ static NSArray<NSString *> *warm_paths(int say) {
                if (e && !strcmp(e, "off")) return nil;
                if (e && *e) return @[@(e)];
                NSString *seed = [shmap_path().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"];
@@ -170,16 +170,16 @@ jobs:
            }
            // Tell the front end at once that the first frame will wait for the prewarm (10-30 device line, Monster Hunter Rise cold start mhrise_1030172905_1: the game's first present, 0.96 s, came
            //   before its first submission, where the shader map loads lazily and the prewarm runs, so the loading page was taken down at that present and the 15 s prewarm showed black).
-          @@ -9857,7 +9861,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
-                           int tid = ubo_tex_id(ubo_handle(nvn_stage, reg, 8 * k)); if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) tid = -1;   // as for the samplers: other data, not a handle
-                           void *tv = NULL; uint64_t trid = tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+          @@ -10041,7 +10045,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+                           //   (RED_ONCE 10) then hid the real unregistered IDs for the rest of the run
+                           void *tv = NULL; uint64_t trid = tid >= 0 ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
                            if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }   // a handle the shader does not pick here may be another kind
           -                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; } else { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, 1); }   // internal resolution: arrays of handles are not scaled
           +                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; } else { real |= 1ull << k; rs_bind_check(t, sh, nvn_stage, b); }   // internal resolution: arrays of handles are not scaled
                            if (bl && tid >= 0) PD("B %llu st%d texu [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
                            slots[aid + k] = trid;
                            USE(t, MTLResourceUsageRead);
-          @@ -9901,7 +9905,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -10086,7 +10090,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                        if (t && b->dpf == NVN_DPF_FLOAT && mtl_pf_dpf(t.pixelFormat) != NVN_DPF_FLOAT) { uint64_t r2 = 0; id<MTLTexture> v = tex_float_fit(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_float_fit
                        if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_alpha_red(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_alpha_red
                        size_abi_texture(sh, nvn_stage, b, tid, size_view, t);
@@ -188,7 +188,7 @@ jobs:
                        if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; }
                        slots[aid] = trid;
                        USE(t, MTLResourceUsageRead);
-          @@ -9926,7 +9930,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -10111,7 +10115,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                        if (t && b->rw && tid < g_ntreg && g_treg[tid].ok) gpw_mark_view(&g_treg[tid].t, &g_treg[tid].v, g_treg[tid].has_v, 1);   // the shader stores to it: its guest bytes go stale (gpw_mark; a load-only image is not)
                        if (t && b->rw && tid < g_ntreg && g_treg[tid].ok) wd_flat_written(g_treg[tid].t.serial);   // S2Arm widen: its content changes, so the horizontal-detail measurement no longer holds
                        size_abi_texture(sh, nvn_stage, b, tid, size_view, t);
@@ -197,7 +197,7 @@ jobs:
                        if (!t) { t = dummy_img(b->dtt, b->dpf, b->atomic_image); trid = t.gpuResourceID._impl; }   // Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
                        slots[aid] = trid;
                        USE(t, MTLResourceUsageRead | MTLResourceUsageWrite);
-          @@ -9966,7 +9970,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -10153,7 +10157,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                                if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 15][b->dpf & 3]; }
                            }
                            if (bl && tv) PD("B %llu st%d texd [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
@@ -206,7 +206,7 @@ jobs:
                            slots[aid + k] = trid;
                            USE(t, MTLResourceUsageRead);
                        }
-          @@ -9983,7 +9987,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+          @@ -10170,7 +10174,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                            int tid = (int)(c2_handle(nvn_stage, b->off + 8u * k) & 0xfffff);
                            void *tv = NULL; uint64_t trid = tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
                            if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit_elem(tid, t, (MTLTextureType)b->dtt, &r2); t = v; trid = v ? r2 : 0; }   // an element the shader does not pick here may be another kind
@@ -215,7 +215,7 @@ jobs:
                            if (bl && tv) PD("B %llu st%d texa [%d] tid=%d %s", g_stat_pass, nvn_stage, k, tid, tv ? "real" : "dummy");
                            slots[aid + k] = trid;
                            USE(t, MTLResourceUsageRead);
-          @@ -13312,6 +13316,11 @@ static int gmem_uses(NvShader *s) {
+          @@ -13509,6 +13513,11 @@ static int gmem_uses(NvShader *s) {
            static void gmem_count_draw(NvProg *pr) { g_gmem_draws_all++; for (int i = 0; i < 5; i++) if (gmem_uses(pr->sh[i])) { g_gmem_draws++; break; } }
            
            static void draw(const p_draw *dw, const p_draw_idx *di) {
@@ -227,7 +227,7 @@ jobs:
                if (dw && dw->prim == DM_PRIM_MESH_TASKS && !g_mtk.on) { mesh_tasks_draw(dw); return; }   // NVN2 task / mesh draw: binds its stages and comes back with its pixel stage (nvn_geometry.inc)
                g_udc_precise = 0;   // only this draw's own udc_note_draw may cover its encode (a draw that returned without encoding leaves no stale cover)
                g_udc_lmap = NULL; g_udc_fsfn = 0;   // the output map is this draw's own too: the one a previous (on-chip read / merged) draw used must not judge the next pass's lookahead (pass_color_unwritten) or a geometry / tessellation draw's writes (11-06 TotK: tiled lights black outside the lit tiles)
-          @@ -13813,10 +13822,10 @@ static void dispatch(const p_dispatch *dp) {
+          @@ -14010,10 +14019,10 @@ static void dispatch(const p_dispatch *dp) {
                    mtl_sub_fill(u->addr + at, 4, cs->rf.first[i].value);
                }
                if (g_nubd && ubd_conflict_cs(cs, dp->ind)) { g_ubd_conflicts++; ubd_land(); }   // see ubd_conflict_cs
@@ -239,7 +239,7 @@ jobs:
                tba_prepare(cs, nil, nil, nil, nil, 1);   // #309: as for draws (see tba_ent)
                uint32_t gx = (uint32_t)dp->x, gy = (uint32_t)dp->y; wd_dispatch(cs, &gx, &gy, dp->ind != 0);   // S2Arm widen: images it writes widened, X groups to the widened width, compute constants rewritten (widen_glue.inc)
                int own = dispatch_own();
-          @@ -15739,7 +15748,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+          @@ -15956,7 +15965,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                // S2Arm: a crop reaching past the source (10-28 Splatoon 3 direct full screen: the game sets a 2346x1080 crop for a few frames while the swap chain texture is still
                //   1920x1080) is shown as the part inside the source, 16:9 with black bars (pf_crop_fit), instead of dropping the frame with "present crop out of bounds";
                //   once the source covers the crop it is used as given again. Everything below (present, grab, screenshots, fit check, AA) takes the fitted crop
@@ -1325,10 +1325,10 @@ jobs:
           +if __name__ == "__main__":
           +    raise SystemExit(main())
           diff --git a/pack/stage_inputs/shell.tsv b/pack/stage_inputs/shell.tsv
-          index 9dac75f1..ce12bede 100644
+          index 125bd4ae..ce12bede 100644
           --- a/pack/stage_inputs/shell.tsv
           +++ b/pack/stage_inputs/shell.tsv
-          @@ -1,229 +1,37 @@
+          @@ -1,232 +1,37 @@
           -# 预编壳输入表（pack/shell_build.sh make ios 出壳实际读到的仓库文件；壳编号 = 「入」在 HEAD 上的对象号指纹，pack/shell/manifest.py inputs_key）。
           -#   生成：缓存都指空目录冷出壳，S2A_SHELL_CLOSURE_SUGGEST=<文件> bash pack/shell_build.sh <壳目录>；之后每次出壳都核（pack/shell/closure.py check），读到表外文件即红
           -#   iOS 游戏库界面（runtime/build.mk S2A_SHELLUI）：本表有「入	shell」行 = 出壳编进库界面（pack/shell_build.sh 只按这行定开关）；11-07 起带上（多款容器要库界面；单款包不调库界面，弱链接不影响）
@@ -1485,8 +1485,10 @@ jobs:
            入	ios
           -入	runtime/ns2pro/LICENSE
           -入	runtime/ns2pro/NS2Accessories.c
+          -入	runtime/ns2pro/NS2Bond.c
           -入	runtime/ns2pro/NS2Input.c
           -入	runtime/ns2pro/NS2JoyCon.c
+          -入	runtime/ns2pro/NS2Keep.c
           -入	runtime/ns2pro/NS2Module.m
           -入	runtime/ns2pro/NS2Motion.c
           -入	runtime/ns2pro/NS2Rumble.c
@@ -1529,6 +1531,7 @@ jobs:
           -入	launchers/macos/build.mk
           -入	launchers/shared/experience.v1.json
           -入	launchers/shared/experience_strings.py
+          -入	launchers/shared/experience_zh_hant.json
           -入	platform/plat.h
           -入	platform/plat_asm.h
           -入	compat
@@ -1671,13 +1674,13 @@ jobs:
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
           git add -- 'docs/坑记录.md' 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/gfx/nvn/nvn_rscale.inc' 'graphics/nvn/gfx/nvn/nvn_rscale_ops.inc' 'graphics/nvn/gfx/nvn/nvn_session.inc' 'graphics/nvn/tests/rscale_access_probe.py' 'graphics/nvn/tests/rscale_math_probe.py' 'graphics/nvn/tests/rscale_policy_probe.py' 'graphics/nvn/tests/t_nvn_pkg_gpu_write.m' 'graphics/nvn/tests/t_nvn_rscale.m' 'graphics/nvn/tests/t_nvn_rscale_access.m' 'graphics/nvn/tests/t_nvn_warm_runtime.m' 'graphics/nvn/tests/test_warm_paths_probe.py' 'graphics/nvn/tests/warm_paths_fixture.m' 'graphics/nvn/tests/warm_paths_probe.py' 'pack/stage_inputs/shell.tsv' 'runtime/tests/mk/nvn_pkg_gpu_write.mk' 'runtime/tests/mk/nvn_rscale.mk' 'runtime/tests/mk/nvn_warm_runtime.mk'
           tree="$(git write-tree)"
-          test "$tree" = "81ec8a8a2c71137f7b20f8e2a89ead505f8fcb72"
+          test "$tree" = "5f86a9afab97b38434e75315f136676574963804"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
           export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
-          export GIT_AUTHOR_DATE='2026-11-13T06:30:00Z' GIT_COMMITTER_DATE='2026-11-13T06:30:00Z'
-          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.3.5 experimental 2x with runtime-only prewarm fix; upstream 61aae40d2e3ead2685f299edd12bc7e266c5a81e')"
+          export GIT_AUTHOR_DATE='2026-11-14T03:00:00Z' GIT_COMMITTER_DATE='2026-11-14T03:00:00Z'
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.3.9 experimental 2x with runtime-only prewarm fix; upstream a57079fa1d9a1af82fedbcdf545acd1426c57c16')"
           git checkout -b s2arm-2x-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
           python3 pack/shell/closure.py pyimports
@@ -1756,7 +1759,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo 'S2ARM_CI_REVISION=3.5-prewarm-fix2'
+          echo 'S2ARM_CI_REVISION=3.9-prewarm-fix2'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
           "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_rscale_access build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"
@@ -1830,8 +1833,8 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.3.5 experimental 2x revision 3 + runtime-only prewarm fix2; default 1x"
-            echo "Upstream baseline: 61aae40d2e3ead2685f299edd12bc7e266c5a81e"
+            echo "Custom build: S2Arm 0.3.9 experimental 2x revision 3 + runtime-only prewarm fix2; default 1x"
+            echo "Upstream baseline: a57079fa1d9a1af82fedbcdf545acd1426c57c16"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
             cat "$output/logs/prewarm-status.txt"
@@ -1851,15 +1854,15 @@ jobs:
           cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
-          printf '0.3.5\n' > "$output/artifact/version.txt"
+          printf '0.3.9\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
           shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-0.3.5-Shell-2x-PSOFix from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Shell build completed. Download S2Arm-0.3.9-Shell-2x-PSOFix from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. Default is 1x. To preserve aspect ratio, disable widescreen and per-game force widescreen, select 2x, then restart the game. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.3.5-Shell-2x-PSOFix
+          name: S2Arm-0.3.9-Shell-2x-PSOFix
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0
@@ -1893,7 +1896,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.3.5-PSOFix-build-logs
+          name: S2Arm-0.3.9-PSOFix-build-logs
           path: ${{ runner.temp }}/s2arm-output/logs/
           if-no-files-found: warn
           retention-days: 7

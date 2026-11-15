@@ -2,13 +2,13 @@
 # Official rendering scale on pinned S2Arm 0.4.0; default remains 1x.
 # Self-contained: the patch and matching-source packaging are included below.
 # GPU eligibility checks unified memory, Metal4 and residency creation.
-# Only the runtime-only PSO prewarm fix is ported; source / closure checks stay enabled.
-name: S2Arm 0.4.0 Shell 2x PSOFix (macOS)
+# Runtime-only PSO prewarm fix plus local iOS diagnostics export; source / closure checks stay enabled.
+name: S2Arm 0.4.0 Shell 2x PSOFix LocalDiag (macOS)
 
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/s2arm-040-pso']
+    branches: ['codex/s2arm-040-localdiag']
     paths: ['.github/workflows/s2arm-shell.yml']
 
 permissions:
@@ -105,13 +105,33 @@ jobs:
             dotnet --info
           } 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/environment.txt"
 
-      - name: Apply runtime-only prewarm fix; check extractor and Foundation regression
+      - name: Apply PSO and local diagnostics fixes; check Foundation regression
         working-directory: source
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae"
           git show HEAD:graphics/nvn/gfx/nvn/nvn_mtl.m > "$RUNNER_TEMP/nvn_mtl-before-prewarm.m"
+          git show HEAD:ios/diag.m > "$RUNNER_TEMP/diag-before-local.m"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
+          diff --git "a/docs/\345\235\221\350\256\260\345\275\225.md" "b/docs/\345\235\221\350\256\260\345\275\225.md"
+          index 1d14d3f1..85131ade 100644
+          --- "a/docs/\345\235\221\350\256\260\345\275\225.md"
+          +++ "b/docs/\345\235\221\350\256\260\345\275\225.md"
+          @@ -2,6 +2,14 @@
+           
+           从这里开始记录，每条写现象、根因、改法。
+           
+          +## 11-15 自定义 iOS 版：诊断入口直接本地导出
+          +
+          +**现象**：用户需要本地 ZIP，游戏菜单、游戏库设置和崩溃提示却先走诊断服务器上传，拿到短码后才能选择导出。
+          +
+          +**根因与改法**：这些入口分别调用 `s2a_diag_report` / `upload_now`，而已有的 `s2a_diag_export` 才会直接打开系统分享面板。自定义版删除诊断上传实现，将入口统一到本地导出；旧 `S2A_DIAG_UPLOAD_NOW` 也只导出，避免留下隐藏上传路径。保留异步打包、忙状态、脱敏、`Documents/diag` 留存和 iPad 分享锚点，同步更正设置与引导文案。云存档上传不属于这次改动。
+          +
+          +**验证边界**：`t_diag_upload` 保留旧工具函数测试，改为检查 iOS 本地导出接线。原实现有 7 项违反新契约，修改后 34 项通过。该检查不执行 UIKit；iOS 编译交 macOS CI，分享面板和游戏内导出仍需真机验证。
+          +
+           ## 11-14 池表拔钉后晚到的退役请求把本次提交还指着的贴图移出常驻集合（t_nvn_pool_tex ⑩ 偶发红）
+           
+           **现象**：`t_nvn_pool_tex` 第 ⑩ 项偶发红：取表把第 91 项换成占位后，旧贴图 X 已不在常驻集合（期望在，本次提交还没做完）。单跑很少红，整份门禁并发时约 1/30–1/16。真机上同一路径就是 GPU 读非常驻内存。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
           index d16ca3e5..1c7098e6 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
@@ -387,6 +407,371 @@ jobs:
           +
           +if __name__ == "__main__":
           +    raise SystemExit(main())
+          diff --git a/ios/app_settings.m b/ios/app_settings.m
+          index 181cf829..a543fad5 100644
+          --- a/ios/app_settings.m
+          +++ b/ios/app_settings.m
+          @@ -27,8 +27,6 @@ void s2a_diag_report(void);
+           // 弱链接[lab]：s2a_console_mode_set（runtime/src/os.c 接口 v2.15 提供；输入工作台不链原生核，取不到就不切）
+           void s2a_console_mode_set(int docked) __attribute__((weak_import));
+           BOOL s2a_diag_is_exporting(void);
+          -BOOL s2a_diag_is_uploading(void);   // diag.m：正在传（这一行改成「正在上传…点按取消」）
+          -void s2a_diag_cancel_upload(void);
+           @implementation S2ASettingsRuntime
+           @end
+           static S2ASettingsRuntime *g_runtime;
+          diff --git a/ios/diag.m b/ios/diag.m
+          index d9d0b1bc..974a8df1 100644
+          --- a/ios/diag.m
+          +++ b/ios/diag.m
+          @@ -1,20 +1,19 @@
+           // 导出诊断包（用户体验线 10-23，明天内测用；包格式由测试出包线定，schema 1）：
+           //   入口：① 系统「设置 → 本 App」里的开关「打开 App 时导出诊断包」（App 打开 / 回前台时看到开着就导出，并把开关关回去）；
+           //         ② 游戏画面上四指长按 1.5 秒 → 菜单「导出诊断包」；③ 没进游戏的提示页（缺资源 / 导入失败）上的按钮；
+          -//         ④ 上次会话在前台没正常收尾（崩溃 / 卡死被杀 / 内存超限被杀）或 MetricKit 报了崩溃 / 卡顿 → 这次启动问一句「把上次的诊断发给我们？」。
+          +//         ④ 上次会话在前台没正常收尾（崩溃 / 卡死被杀 / 内存超限被杀）或 MetricKit 报了崩溃 / 卡顿 → 这次启动问一句「导出上次的诊断包？」。
+           //   包：S2Arm-诊断-<月日>-<时分>.zip（英文界面 S2Arm-diag-…；同一分钟再导出加 -2），压缩后 ≤ 30 MB：
+           //       manifest.json、logs/host.log + logs/host-<起局时刻>.log（本局 + 机上归档的最近 9 局；单份超 8 MB 只留头 2 MB + 尾 6 MB）、
+           //       logs/frames.tsv、logs/threads.txt、logs/unpack.log（有就放）、metrickit/*.json（MetricKit 崩溃 / 卡顿诊断原样 JSON）、
+           //       shaders/*（现编着色器的输入：编到一半进程没了留下的 .inflight.*、翻译器报错留下的 .fail.*、编了 5 秒还没完的管线的 .slow.metal 源，有就放）、
+           //       diagrun/*.png（诊断局的出图与颜色目标，总量 ≤ 20 MB）、pso/<程序号>.tsv（本机管线记录，只有着色器键，总量 ≤ 8 MB）。
+           //   脱敏：App 数据目录 / 安装目录换成 <APP> / <BUNDLE>，设备名、UDID 去掉；存档（bis/user/save）、资源包、密钥都不放。
+          -//   交出（11-13 起）：入口②③④是「上传给开发者」——传到 diag.s2arm.com，玩家拿到短码、只复制短码；上传失败退回系统分享面板（AirDrop / 存到文件 / 微信）。
+          -//         入口①仍直接弹分享面板。包同时留在 Documents/diag/（只留最近 3 个，Mac 前端「拉回诊断」能拉到）。
+          +//   交出：所有诊断入口直接弹系统分享面板，由玩家选择「存储到文件」或分享；不上传到诊断服务器。
+          +//         包同时留在 Documents/diag/（只留最近 3 个，Mac 前端「拉回诊断」能拉到）。
+           #import <UIKit/UIKit.h>
+           #import "s2a_l10n.h"
+           #import <MetricKit/MetricKit.h>
+           #import <Metal/Metal.h>
+          -#import <CoreTelephony/CTCellularData.h>   // 上传断网时认「无线数据」授权被拒（国行 iPhone）
+           #import "vpad.h"
+           #import "app_settings.h"
+           #include <sys/sysctl.h>
+          @@ -25,7 +24,6 @@ NSUserDefaults *s2a_ios_settings_defaults(void);   // settings.m：诊断局开
+           #include "s2a_pad.h"   // s2a_pad_plus_press：手柄长按「+」开菜单
+           #include "s2a_launch_ctx.h"
+           #include "s2a_sesdiag.h"
+          -#include "diag_upload.h"   // 上传给开发者：结果判断（纯 C，单测 t_diag_upload）
+           
+           static NSString *docs(void) { return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject; }
+           // 资源包根：启动上下文给了本款资源包就读它（上下文文件 / 多款容器选了游戏：v0.3.0 起在 Library 下，s2a_docs.h s2a_pack_root）；
+          @@ -55,9 +53,7 @@ static NSArray<NSString *> *archived_logs(void) {
+           static NSString *const kOpenToggle = @"S2ADiagExportOnOpen";   // Settings.bundle 里的开关
+           static UIViewController *g_vc;
+           static BOOL g_prompted, g_exporting;
+          -// 「故障报修」里玩家写的一句「发生了什么」（选填）：随这一份包写进 manifest.json 顶层 note（收件服务存进元数据、取件写进定位卡「玩家说」），传完清掉
+          -static NSString *g_report_note;
+          -static __weak UIAlertController *g_promptAlert;   // 「把上次的诊断发给我们？」正显示着时指向它：导出要先把它关掉再弹分享面板，不叠在一起
+          +static __weak UIAlertController *g_promptAlert;   // 「导出上次的诊断包？」正显示着时指向它：导出要先把它关掉再弹分享面板，不叠在一起
+           
+           // ---------- 单次会话日志的摘要（manifest.sessions 一项；只在导出诊断包的后台线程算）----------
+           // 11-07 起只读头 1 MB + 尾 3 MB、按字节找（runtime/src/sesdiag.c s2a_log_summary）：原先整份读成 NSString 逐行折叠查找，挂死后刷满红行的上一局日志在主线程上卡几秒（测试设备2 看门狗复位）
+          @@ -292,7 +288,7 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
+               NSDictionary *manifest = @{
+                   @"schema": @1, @"exported_at": [iso stringFromDate:NSDate.date],
+                   @"tester": @{@"id": tester_id(), @"group": @"", @"note": @""},
+          -        @"note": g_report_note ?: @"",
+          +        @"note": @"",
+                   @"app": @{@"bundle": bundle, @"version": [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"", @"commit": commit,
+                             // 包号：单款包 S2ABuildID；多款容器的壳没有按款包号，记壳号 S2AShellId（同 s2a_catalogue.json shell_id）
+                             @"build_id": [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2ABuildID"] ?: [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2AShellId"] ?: @"",
+          @@ -356,7 +352,7 @@ static UIViewController *top_of(UIViewController *host) {
+               if ([top isKindOfClass:UINavigationController.class]) top = ((UINavigationController *)top).topViewController;
+               return top;
+           }
+          -// 询问弹窗（「把上次的诊断发给我们？」）还开着就先关掉，关完再弹下一个（导出 / 上传就是对它的回答）
+          +// 询问弹窗（「导出上次的诊断包？」）还开着就先关掉，关完再弹下一个（导出就是对它的回答）
+           static void present_over(UIViewController *host, UIViewController *vc) {
+               void (^show)(void) = ^{ UIViewController *top = host; while (top.presentedViewController) top = top.presentedViewController; [top presentViewController:vc animated:YES completion:nil]; };
+               UIAlertController *q = g_promptAlert;
+          @@ -372,7 +368,7 @@ static void share_zip(UIViewController *host, NSURL *zip) {
+               av.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(host.view.bounds), CGRectGetMidY(host.view.bounds), 1, 1);
+               present_over(host, av);
+           }
+          -// 导出并弹系统分享面板（主线程调）：上传失败时的退路，和系统设置里「打开 App 时导出诊断包」开关
+          +// 导出并弹系统分享面板（主线程调）：所有诊断入口共用，打包期间避免重复请求
+           void s2a_diag_export(void) {
+               UIViewController *host = diag_host();
+               if (g_exporting || !host) return;
+          @@ -380,126 +376,10 @@ void s2a_diag_export(void) {
+               build_async(^(NSURL *zip, NSString *err) { busy_done(); if (!zip) build_failed(host, err); else share_zip(host, zip); });
+           }
+           
+          -// ---------- 上传给开发者（诊断一键上传，11-13）：传完给玩家一个短码，玩家只要把码贴到帖子里 ----------
+          -//   服务端 diag.s2arm.com（只用这个域名，*.workers.dev 国内不通）收件后 7 天自动删；不合规的包服务端直接拒收不落盘。
+          -//   失败（没网、服务不可达、包被拒、限频）一律说清原因并退回「导出诊断包」，玩家照旧能手动发
+          -// 预填好诊断码的 GitHub 新帖页（格式见 diag_upload.h；各值按 URL 查询值编码：只留字母数字和 -._~）
+          -static NSURL *issue_url(NSString *code) {
+          -    NSMutableCharacterSet *ok = [NSMutableCharacterSet alphanumericCharacterSet]; [ok addCharactersInString:@"-._~"];
+          -    NSString *(^enc)(NSString *) = ^(NSString *v) { return [v stringByAddingPercentEncodingWithAllowedCharacters:ok] ?: @""; };
+          -    NSString *ver = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+          -    NSString *plat = @(s2a_diag_issue_platform(UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad));
+          -    NSMutableString *u = [NSMutableString stringWithFormat:@"%s?template=%@&logs=%@", S2A_DIAG_ISSUE_NEW, enc(@S2A_DIAG_ISSUE_TEMPLATE), enc(code)];
+          -    if (ver.length) [u appendFormat:@"&version=%@", enc(ver)];   // 拿不到版本就省掉
+          -    [u appendFormat:@"&platform=%@&title=%@", enc(plat), enc(@S2A_DIAG_ISSUE_TITLE)];
+          -    return [NSURL URLWithString:u];
+          -}
+          -// 总时限（11-13 玩家卡在「正在上传…」）：原先 timeoutInterval = 120 只管两次收发之间多久没动静，网慢 / 代理半通时可以一直挂着，失败还再试一次，没有总上限。
+          -//   现在从第一次开始算 90 秒（两次尝试合计），每次尝试的资源时限 = 剩下的时间，到点按失败处理；进行中的那次可被「取消」停掉（settings 那一行）
+          -#define DIAG_UPLOAD_TOTAL_S 90.0
+          -static NSURLSessionTask *g_upload_task;   // 正在传的那次（主线程读写）；取消时 cancel 它
+          -static BOOL g_upload_cancelled;
+          -BOOL s2a_diag_is_uploading(void) { return g_upload_task != nil; }
+          -void s2a_diag_cancel_upload(void) {   // 主线程调：停掉正在传的那次，结果按「已取消」给（不再重试）
+          -    if (!g_upload_task) return;
+          -    g_upload_cancelled = YES; LOG("诊断包：玩家取消上传"); [g_upload_task cancel];
+          -}
+          -static void post_zip(NSURL *zip, int attempt, CFAbsoluteTime started, void (^done)(NSString *code, NSString *fail)) {
+          -    double left = DIAG_UPLOAD_TOTAL_S - (CFAbsoluteTimeGetCurrent() - started);
+          -    if (left < 1) { LOG("【红】诊断包：上传超过 %.0f 秒总时限，按失败处理", DIAG_UPLOAD_TOTAL_S);
+          -        dispatch_async(dispatch_get_main_queue(), ^{ g_upload_task = nil; done(nil, [NSString stringWithFormat:S2AL(@"diag.upload.fail.timeout"), (int)DIAG_UPLOAD_TOTAL_S]); }); return; }
+          -    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+          -    cfg.timeoutIntervalForRequest = MIN(30.0, left); cfg.timeoutIntervalForResource = left;
+          -    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+          -    NSMutableURLRequest *rq = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://diag.s2arm.com/v1/upload"]];
+          -    rq.HTTPMethod = @"POST";
+          -    [rq setValue:@"application/zip" forHTTPHeaderField:@"Content-Type"];
+          -    [rq setValue:[@"ios/" stringByAppendingString:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0"] forHTTPHeaderField:@"X-S2Arm-Client"];
+          -    NSURLSessionUploadTask *task = [session uploadTaskWithRequest:rq fromFile:zip completionHandler:^(NSData *data, NSURLResponse *resp, NSError *e) {
+          -        [session finishTasksAndInvalidate];
+          -        if (g_upload_cancelled || [e.domain isEqualToString:NSURLErrorDomain] && e.code == NSURLErrorCancelled) {
+          -            dispatch_async(dispatch_get_main_queue(), ^{ g_upload_task = nil; done(nil, S2AL(@"diag.upload.cancelled")); }); return; }
+          -        if ([e.domain isEqualToString:NSURLErrorDomain] && e.code == NSURLErrorTimedOut && CFAbsoluteTimeGetCurrent() - started >= DIAG_UPLOAD_TOTAL_S - 1) {
+          -            LOG("【红】诊断包：上传超过 %.0f 秒总时限（%s），按失败处理", DIAG_UPLOAD_TOTAL_S, e.localizedDescription.UTF8String);
+          -            dispatch_async(dispatch_get_main_queue(), ^{ g_upload_task = nil; done(nil, [NSString stringWithFormat:S2AL(@"diag.upload.fail.timeout"), (int)DIAG_UPLOAD_TOTAL_S]); }); return; }
+          -        int status = [resp isKindOfClass:NSHTTPURLResponse.class] ? (int)((NSHTTPURLResponse *)resp).statusCode : 0;
+          -        id j = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+          -        NSDictionary *d = [j isKindOfClass:NSDictionary.class] ? j : nil;
+          -        NSString *code = [d[@"code"] isKindOfClass:NSString.class] ? d[@"code"] : nil, *why = [d[@"error"] isKindOfClass:NSString.class] ? d[@"error"] : @"";
+          -        s2a_up_verdict v = s2a_diag_up_verdict(status, e != nil, attempt, code.UTF8String);
+          -        if (v == S2A_UP_OK) {
+          -            LOG("诊断包：已上传，短码 %s（第 %d 次），发帖页 %s", code.UTF8String, attempt + 1, issue_url(code).absoluteString.UTF8String);
+          -            dispatch_async(dispatch_get_main_queue(), ^{ g_upload_task = nil; done(code, nil); }); return;
+          -        }
+          -        if (v == S2A_UP_RETRY) {
+          -            LOG("诊断包：上传第 %d 次没成（HTTP %d %s），2 秒后再试一次", attempt + 1, status, e ? e.localizedDescription.UTF8String : "");
+          -            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ post_zip(zip, attempt + 1, started, done); }); return;
+          -        }
+          -        // 给玩家的原因：服务端 message 是中文一句、可直接给玩家看（中文界面用它），英文界面按错误种类给本地一句
+          -        NSString *msg = [d[@"message"] isKindOfClass:NSString.class] ? d[@"message"] : nil, *fail;
+          -        static CTCellularData *cell; static dispatch_once_t once; dispatch_once(&once, ^{ cell = [CTCellularData new]; });
+          -        if (e && s2a_diag_net_denied((int)e.code, (int)cell.restrictedState)) fail = S2AL(@"diag.upload.fail.denied");
+          -        else if (e) fail = [NSString stringWithFormat:S2AL(@"diag.upload.fail.network"), e.localizedDescription];
+          -        else if (status == 429) fail = S2AL(@"diag.upload.fail.busy");
+          -        else if (status == 400 || status == 413) fail = s2a_l10n_zh() && msg.length ? msg : [NSString stringWithFormat:S2AL(@"diag.upload.fail.rejected"), why];
+          -        else fail = [NSString stringWithFormat:S2AL(@"diag.upload.fail.server"), status];
+          -        LOG("【红】诊断包：上传失败（HTTP %d %s %s），退回导出", status, why.UTF8String, e ? e.localizedDescription.UTF8String : "");
+          -        dispatch_async(dispatch_get_main_queue(), ^{ g_upload_task = nil; done(nil, fail); });
+          -    }];
+          -    dispatch_async(dispatch_get_main_queue(), ^{ if (!g_upload_cancelled) { g_upload_task = task; [NSNotificationCenter.defaultCenter postNotificationName:@"S2ADiagExportChanged" object:nil]; [task resume]; } else { [task cancel]; } });
+          -}
+          -// 传一份已打好的包并给结果（主线程调）：成功显示短码 +「复制短码」；失败说原因，给「再试一次」和「导出诊断包」两条路
+          -//   （国行 iPhone 第一次联网时系统先弹「允许使用无线数据」，弹着时请求一律报断网——玩家点了允许，再试一次就能传）
+          -static void upload_zip(UIViewController *host, NSURL *zip) {
+          -    if (g_exporting) return;
+          -    g_exporting = YES; g_upload_cancelled = NO; [NSNotificationCenter.defaultCenter postNotificationName:@"S2ADiagExportChanged" object:nil];
+          -    post_zip(zip, 0, CFAbsoluteTimeGetCurrent(), ^(NSString *code, NSString *fail) {
+          -        busy_done();
+          -        UIAlertController *a;
+          -        if (code) {
+          -            a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.done.title") message:[NSString stringWithFormat:S2AL(@"diag.upload.done.message"), code, @S2A_DIAG_REPO] preferredStyle:UIAlertControllerStyleAlert];
+          -            UIAlertAction *post = [UIAlertAction actionWithTitle:S2AL(@"diag.upload.post") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x;
+          -                LOG("诊断包：打开 GitHub 发帖页（短码 %s）", code.UTF8String); [UIApplication.sharedApplication openURL:issue_url(code) options:@{} completionHandler:nil]; }];
+          -            [a addAction:post]; a.preferredAction = post;   // 主按钮
+          -            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.copy") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; UIPasteboard.generalPasteboard.string = code; LOG("诊断包：短码已复制"); }]];
+          -            // 诊断局（#438）从设置页挪到这里（11-14 重做）：报完问题顺手问一句，下一局多记一些再传一次；已开着就不问
+          -            if (![s2a_ios_settings_defaults() boolForKey:@"S2ADiagRunNext"])
+          -                [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.runNext") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x;
+          -                    [s2a_ios_settings_defaults() setBool:YES forKey:@"S2ADiagRunNext"]; LOG("诊断包：玩家选了下一局开诊断局"); }]];
+          -            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+          -        } else {
+          -            a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.upload.fail.title") message:fail preferredStyle:UIAlertControllerStyleAlert];
+          -            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; upload_zip(host, zip); }]];
+          -            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.export") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; share_zip(host, zip); }]];
+          -            [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.gotIt") style:UIAlertActionStyleCancel handler:nil]];
+          -        }
+          -        present_over(host, a);
+          -    });
+          -}
+          -static void upload_now(void) {
+          -    UIViewController *host = diag_host();
+          -    if (g_exporting || !host) return;
+          -    LOG("诊断包：开始打包上传");
+          -    build_async(^(NSURL *zip, NSString *err) { g_report_note = nil; busy_done(); if (!zip) build_failed(host, err); else upload_zip(host, zip); });
+          -}
+          -// 「故障报修」（11-13 维护者定：各页面的小齿轮菜单最下面；游戏库在设置页最下面）：说清会传什么，给一个可不填的文本框写「发生了什么」，
+          -//   点「上传」照现有流程打包上传、给短码。不填也能传，不做任何必填校验
+          -void s2a_diag_report(void) {
+          -    UIViewController *host = diag_host();
+          -    if (g_exporting || !host) return;
+          -    UIAlertController *a = [UIAlertController alertControllerWithTitle:S2AL(@"diag.report.title") message:S2AL(@"diag.report.message") preferredStyle:UIAlertControllerStyleAlert];
+          -    [a addTextFieldWithConfigurationHandler:^(UITextField *f) { f.placeholder = S2AL(@"diag.report.placeholder"); f.clearButtonMode = UITextFieldViewModeWhileEditing; f.accessibilityIdentifier = @"diag.report.note"; }];
+          -    __weak UIAlertController *wa = a;
+          -    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"common.cancel") style:UIAlertActionStyleCancel handler:nil]];
+          -    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.upload.go") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x;
+          -        NSString *t = [wa.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+          -        g_report_note = t.length ? t : nil;
+          -        LOG("诊断包：故障报修（玩家%s写说明，%lu 字）", g_report_note ? "" : "没", (unsigned long)t.length);
+          -        upload_now(); }]];
+          -    present_over(host, a);
+          -}
+          -void s2a_shell_report_problem(void) { s2a_diag_report(); }   // 游戏库设置页「故障报修」（shell/Sources/S2ArmShellBridge/include/s2a_shell.h，壳里有空的弱定义）
+          -// 页面左上角的小齿轮（加载页 / 提示页 / 帮助页；游戏中用虚拟按键自己的齿轮、游戏库用库界面的齿轮）：菜单最下面「故障报修」
+          +// 保留原来的报修入口名称，让游戏菜单、缺资源提示和游戏库统一直接导出。
+          +void s2a_diag_report(void) { s2a_diag_export(); }
+          +void s2a_shell_report_problem(void) { s2a_diag_report(); }   // 游戏库设置页「导出诊断包」（shell/Sources/S2ArmShellBridge/include/s2a_shell.h，壳里有空的弱定义）
+          +// 页面左上角的小齿轮（加载页 / 提示页 / 帮助页；游戏中用虚拟按键自己的齿轮、游戏库用库界面的齿轮）：菜单最下面「导出诊断包」
+           void s2a_report_gear_attach(UIView *page) {
+               if (!page) return;
+               UIButton *g = [UIButton buttonWithType:UIButtonTypeSystem]; g.accessibilityIdentifier = @"page.gear"; g.accessibilityLabel = S2AL(@"diag.report.title");
+          @@ -576,18 +456,18 @@ static void crash_off_notice_only(void) {
+               if (!g_crash_off) return;
+               s2a_dprompt_notice(S2AL(@"crash.off.title"), [NSString stringWithFormat:S2AL(@"crash.off.body"), g_crash_off], 0, 8); g_crash_off = nil;
+           }
+          -// 问一句「把上次的诊断发给我们？」（每次启动最多问一次）；崩溃恢复刚关掉东西时，同一个提示先说关掉了什么
+          +// 问一句「导出上次的诊断包？」（每次启动最多问一次）；崩溃恢复刚关掉东西时，同一个提示先说关掉了什么
+           void s2a_diag_prompt(NSString *why) {
+               // 已经在导出（或分享面板开着）就不问了：玩家正在发，问了只会和分享面板叠在一起
+               if (g_prompted || !g_vc) { crash_off_notice_only(); return; } g_prompted = YES;
+               // 自动化 / 开发工具起的局（s2a_unattended.h）不问：日志由工具拉回，弹窗只会挡住整局
+          -    if (s2a_unattended()) { LOG("诊断：%s；自动化局不问「把上次的诊断发给我们？」", why.UTF8String); crash_off_notice_only(); return; }
+          +    if (s2a_unattended()) { LOG("诊断：%s；自动化局不问「导出上次的诊断包？」", why.UTF8String); crash_off_notice_only(); return; }
+               if (g_exporting || [g_vc.presentedViewController isKindOfClass:UIActivityViewController.class]) { crash_off_notice_only(); return; }
+               NSString *off = g_crash_off; g_crash_off = nil;
+               UIAlertController *a = [UIAlertController alertControllerWithTitle:off ? S2AL(@"crash.off.title") : S2AL(@"diag.prompt.title")
+                   message:off ? [NSString stringWithFormat:S2AL(@"crash.off.prompt"), off] : [NSString stringWithFormat:S2AL(@"diag.prompt.message"), why] preferredStyle:UIAlertControllerStyleAlert];
+               [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.prompt.no") style:UIAlertActionStyleCancel handler:nil]];
+          -    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.prompt.send") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; upload_now(); }]];
+          +    [a addAction:[UIAlertAction actionWithTitle:S2AL(@"diag.prompt.send") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; s2a_diag_export(); }]];
+               UIViewController *top = g_vc; while (top.presentedViewController) top = top.presentedViewController;
+               g_promptAlert = a; [top presentViewController:a animated:YES completion:nil];
+           }
+          @@ -597,8 +477,8 @@ static void check_toggle(void) {
+               NSUserDefaults *u = NSUserDefaults.standardUserDefaults;
+               static BOOL env_done;   // 真机验证用：devicectl 起局带 S2A_DIAG_EXPORT_NOW=1 → 启动就导出一次（包落 Documents/diag/，执行器拉回核对），不用人点
+               if (!env_done) { env_done = YES; const char *e = getenv("S2A_DIAG_EXPORT_NOW"); if (e && *e == '1') { s2a_diag_export(); return; }
+          -        // 同理 S2A_DIAG_UPLOAD_NOW=1 → 启动就上传一次（不弹确认，短码 / 失败原因进 host.log，执行器拉回核对）
+          -        e = getenv("S2A_DIAG_UPLOAD_NOW"); if (e && *e == '1') { upload_now(); return; } }
+          +        // 兼容旧自动化开关：S2A_DIAG_UPLOAD_NOW=1 也只导出本地 ZIP，不联网
+          +        e = getenv("S2A_DIAG_UPLOAD_NOW"); if (e && *e == '1') { s2a_diag_export(); return; } }
+               if (![u boolForKey:kOpenToggle]) return;
+               [u setBool:NO forKey:kOpenToggle]; s2a_diag_export();
+           }
+          diff --git a/ios/l10n/en.lproj/S2ArmHost.strings b/ios/l10n/en.lproj/S2ArmHost.strings
+          index 5adc630d..9713c20a 100644
+          --- a/ios/l10n/en.lproj/S2ArmHost.strings
+          +++ b/ios/l10n/en.lproj/S2ArmHost.strings
+          @@ -82,7 +82,7 @@
+           "cpatch.title.ultrawide" = "Ultrawide";
+           "cpatch.title.widescreenPatch" = "Widescreen patch";
+           "crash.off.body" = "The game quit last time while %@ was on, so it’s off this time. You can turn it back on in Settings.";
+          -"crash.off.prompt" = "The game quit last time while %@ was on, so it’s off this time. You can turn it back on in Settings.\n\nSending us the diagnostics helps us fix it. The bundle contains only run logs — no saves, keys or game files.";
+          +"crash.off.prompt" = "The game exited last time with %@ enabled, so it has been turned off for this launch. You can enable it again in settings.\n\nYou can export a local diagnostics ZIP to help investigate. It does not include saves, keys or game files, and is not uploaded automatically.";
+           "crash.off.title" = "Turned off what was on when the game quit";
+           "sgrade.title" = "S-grade enhancements";
+           "sgrade.note" = "If a patch is incompatible and makes the game crash, it is turned off automatically the next time you launch, so you can keep playing.";
+          @@ -326,10 +326,10 @@
+           "diag.export" = "Export diagnostics";
+           "diag.prompt.abnormalExit" = "S2Arm didn’t quit normally last time (it crashed, froze or was closed by the system)";
+           "diag.prompt.crash" = "The system reported that S2Arm crashed or froze last time";
+          -"diag.prompt.message" = "%@. This uploads run logs, crash reports and the list of graphics pipelines the games used (shader IDs only) — no saves, keys or game files — and gives you a short code.";
+          +"diag.prompt.message" = "%@. Export a local ZIP of run logs, crash reports and shader IDs, without saves, keys or game files. You choose where to save or share it.";
+           "diag.prompt.no" = "No thanks";
+          -"diag.prompt.send" = "Upload";
+          -"diag.prompt.title" = "Send us diagnostics from last time?";
+          +"diag.prompt.send" = "Export diagnostics";
+          +"diag.prompt.title" = "Export diagnostics from last time?";
+           "diag.upload.cancelled" = "Upload cancelled. You can export the diagnostics package and send it to us yourself.";
+           "diag.upload.copy" = "Copy code";
+           "diag.upload.runNext" = "Record more next time (if it happens again)";
+          @@ -343,8 +343,8 @@
+           "diag.upload.fail.timeout" = "The upload didn't finish within %d seconds (the network is slow or the connection stalled), so it was stopped. You can try again or export the diagnostics package instead.";
+           "diag.upload.fail.title" = "Upload didn’t work";
+           "diag.upload.go" = "Upload";
+          -"diag.report.title" = "Report a Problem";
+          -"diag.report.message" = "We’ll upload this device’s logs, device info and the list of graphics pipelines the games used (shader IDs only) to help find the cause, then give you a short code. You can write a sentence about what happened (optional).";
+          +"diag.report.title" = "Export diagnostics";
+          +"diag.report.message" = "Creates a local ZIP of logs and device information, then opens the share sheet. Nothing is uploaded automatically.";
+           "diag.report.placeholder" = "What happened? (optional)";
+           "diag.upload.post" = "Post on GitHub";
+           "diag.upload.retry" = "Try again";
+          diff --git a/ios/l10n/zh-Hans.lproj/S2ArmHost.strings b/ios/l10n/zh-Hans.lproj/S2ArmHost.strings
+          index a461571f..fa552692 100644
+          --- a/ios/l10n/zh-Hans.lproj/S2ArmHost.strings
+          +++ b/ios/l10n/zh-Hans.lproj/S2ArmHost.strings
+          @@ -82,7 +82,7 @@
+           "cpatch.title.ultrawide" = "超宽屏";
+           "cpatch.title.widescreenPatch" = "宽屏补丁";
+           "crash.off.body" = "上次开着 %@ 时游戏退出了，这次已为你关掉。想用的话，可以在设置里重新打开。";
+          -"crash.off.prompt" = "上次开着 %@ 时游戏退出了，这次已为你关掉，想用的话可以在设置里重新打开。\n\n把这次的诊断发给我们，能帮我们修好它。诊断包里只有运行日志，不含存档、密钥和游戏文件。";
+          +"crash.off.prompt" = "上次开着 %@ 时游戏退出了，这次已为你关掉，想用的话可以在设置里重新打开。\n\n可以导出诊断 ZIP 帮助排查，由你选择保存或分享。不会自动上传，也不含存档、密钥或游戏文件。";
+           "crash.off.title" = "已关掉上次出问题的设置";
+           "sgrade.title" = "S 级优化";
+           "sgrade.note" = "开着补丁如遇到不兼容导致游戏崩溃，下次启动会自动将崩溃补丁关掉以确保您正常游戏。";
+          @@ -326,10 +326,10 @@
+           "diag.export" = "导出诊断包";
+           "diag.prompt.abnormalExit" = "上次 S2Arm 没有正常退出（崩溃、卡住或被系统关掉）";
+           "diag.prompt.crash" = "系统报告上次 S2Arm 崩溃或卡住了";
+          -"diag.prompt.message" = "%@。会上传运行日志、崩溃记录和游戏用过的图形管线清单（只有着色器编号），不传存档、密钥和游戏文件；传完给你一个短码。";
+          +"diag.prompt.message" = "%@。可以导出包含运行日志、崩溃记录和着色器编号的 ZIP，不含存档、密钥或游戏文件；由你选择保存或分享，不会自动上传。";
+           "diag.prompt.no" = "不用了";
+          -"diag.prompt.send" = "上传";
+          -"diag.prompt.title" = "把上次的诊断发给我们？";
+          +"diag.prompt.send" = "导出诊断包";
+          +"diag.prompt.title" = "导出上次的诊断包？";
+           "diag.upload.cancelled" = "上传已取消。可以改用导出诊断包，手动发给我们。";
+           "diag.upload.copy" = "复制短码";
+           "diag.upload.runNext" = "下一局多记一些（问题还会出现时）";
+          @@ -343,8 +343,8 @@
+           "diag.upload.fail.timeout" = "上传超过 %d 秒还没完成（网络太慢或连接卡住），已停止。可以再试一次，或改用导出诊断包。";
+           "diag.upload.fail.title" = "上传没成功";
+           "diag.upload.go" = "上传";
+          -"diag.report.title" = "故障报修";
+          -"diag.report.message" = "会上传这台设备的日志、设备信息和游戏用过的图形管线清单（只有着色器编号），帮我们找原因，然后给你一个短码。可以写一句发生了什么（可不填）。";
+          +"diag.report.title" = "导出诊断包";
+          +"diag.report.message" = "在本机生成包含日志和设备信息的 ZIP，再打开系统分享面板，由你选择保存或分享，不会自动上传。";
+           "diag.report.placeholder" = "发生了什么（可不填）";
+           "diag.upload.post" = "去 GitHub 发帖";
+           "diag.upload.retry" = "再试一次";
+          diff --git a/ios/l10n/zh-Hant.lproj/S2ArmHost.strings b/ios/l10n/zh-Hant.lproj/S2ArmHost.strings
+          index 7b134fc9..4eaeedea 100644
+          --- a/ios/l10n/zh-Hant.lproj/S2ArmHost.strings
+          +++ b/ios/l10n/zh-Hant.lproj/S2ArmHost.strings
+          @@ -299,10 +299,10 @@
+           "diag.export" = "匯出診斷包";
+           "diag.prompt.abnormalExit" = "上次 S2Arm 沒有正常結束（當機、卡住或被系統關閉）";
+           "diag.prompt.crash" = "系統回報上次 S2Arm 當機或卡住了";
+          -"diag.prompt.message" = "%@。會上傳執行紀錄、當機紀錄和遊戲用過的圖形管線清單（只有著色器編號），不會上傳存檔、金鑰和遊戲檔案；上傳完成後會給你一組短碼。";
+          +"diag.prompt.message" = "%@。可以匯出包含執行日誌、當機紀錄和著色器編號的 ZIP，不含存檔、金鑰或遊戲檔案；由你選擇儲存或分享，不會自動上傳。";
+           "diag.prompt.no" = "不用了";
+          -"diag.prompt.send" = "上傳";
+          -"diag.prompt.title" = "要把上次的診斷資料傳給我們嗎？";
+          +"diag.prompt.send" = "匯出診斷包";
+          +"diag.prompt.title" = "匯出上次的診斷包？";
+           "diag.upload.cancelled" = "上傳已取消。可以改用匯出診斷包，手動發給我們。";
+           "diag.upload.copy" = "複製短碼";
+           "diag.upload.runNext" = "下一局多記一些（問題還會出現時）";
+          @@ -316,8 +316,8 @@
+           "diag.upload.fail.timeout" = "上傳超過 %d 秒還沒完成（網路太慢或連線卡住），已停止。可以再試一次，或改用匯出診斷包。";
+           "diag.upload.fail.title" = "上傳失敗";
+           "diag.upload.go" = "上傳";
+          -"diag.report.title" = "故障報修";
+          -"diag.report.message" = "會上傳這台裝置的日誌、裝置資訊和遊戲用過的圖形管線清單（只有著色器編號），幫我們找原因，然後給你一個短碼。可以寫一句發生了什麼（可不填）。";
+          +"diag.report.title" = "匯出診斷包";
+          +"diag.report.message" = "在本機產生包含日誌與裝置資訊的 ZIP，再開啟系統分享面板，由你選擇儲存或分享，不會自動上傳。";
+           "diag.report.placeholder" = "發生了什麼（可不填）";
+           "diag.upload.post" = "前往 GitHub 發文";
+           "diag.upload.retry" = "再試一次";
+          @@ -486,7 +486,7 @@
+           "cpatch.title.adaptive" = "自適應滿屏（任意螢幕比例）";
+           "cpatch.title.autoRatio" = "滿屏補丁（按螢幕比例自動選）";
+           "crash.off.body" = "上次開著 %@ 時遊戲退出了，這次已為你關掉。想用的話，可以在設定裡重新開啟。";
+          -"crash.off.prompt" = "上次開著 %@ 時遊戲退出了，這次已為你關掉，想用的話可以在設定裡重新開啟。\n\n把這次的診斷發給我們，能幫我們修好它。診斷包裡只有執行日誌，不含存檔、金鑰和遊戲檔案。";
+          +"crash.off.prompt" = "上次開著 %@ 時遊戲退出了，這次已為你關掉，想用的話可以在設定裡重新開啟。\n\n可以匯出診斷 ZIP 協助排查，由你選擇儲存或分享。不會自動上傳，也不含存檔、金鑰或遊戲檔案。";
+           "crash.off.title" = "已關掉上次出問題的設定";
+           "sgrade.title" = "S 級優化";
+           "sgrade.note" = "開著補丁如遇到不相容導致遊戲當機，下次啟動會自動將當機補丁關掉以確保您正常遊戲。";
           diff --git a/pack/stage_inputs/shell.tsv b/pack/stage_inputs/shell.tsv
           index f511eb4e..f0b5b783 100644
           --- a/pack/stage_inputs/shell.tsv
@@ -658,6 +1043,16 @@ jobs:
           +入	tests
           +入	tools
           +入	translator
+          diff --git a/runtime/tests/mk/diag_upload.mk b/runtime/tests/mk/diag_upload.mk
+          index bf202d80..98833d87 100644
+          --- a/runtime/tests/mk/diag_upload.mk
+          +++ b/runtime/tests/mk/diag_upload.mk
+          @@ -1,4 +1,4 @@
+          -# native-test-diag_upload：诊断一键上传的纯判断（ios/diag_upload.h）+ ios/diag.m 接线断言（同 pad_liveness.mk 的做法）
+          +# native-test-diag_upload：旧诊断上传工具的纯判断（ios/diag_upload.h）+ iOS 本地导出接线断言（同 pad_liveness.mk 的做法）
+           NATIVE_TEST_OWN += diag_upload
+           .PHONY: native-test-diag_upload
+           native-test-diag_upload:
           diff --git a/runtime/tests/mk/nvn_warm_runtime.mk b/runtime/tests/mk/nvn_warm_runtime.mk
           new file mode 100644
           index 00000000..7f853708
@@ -684,18 +1079,365 @@ jobs:
           +	  $(BUILD)/tests/t_nvn_warm_runtime read "$$tmp"
           +TEST_TARGETS += native-test-nvn_warm_runtime
           +endif
+          diff --git a/runtime/tests/t_diag_upload.c b/runtime/tests/t_diag_upload.c
+          index 17b74512..0411e61f 100644
+          --- a/runtime/tests/t_diag_upload.c
+          +++ b/runtime/tests/t_diag_upload.c
+          @@ -1,4 +1,5 @@
+          -// 诊断一键上传：纯判断 ios/diag_upload.h 的决策表 + ios/diag.m 接线断言（UIKit / NSURLSession 在 Mac 宿主上编不了，行为靠决策表、接线靠文本断言）。
+          +// 诊断：保留旧上传工具的纯 C 决策表测试；iOS 接线必须直接本地导出，不能上传。
+          +// UIKit 的系统分享面板需要 iOS 编译和真机验收；这里仅检查入口与离线边界。
+           #include "../../ios/diag_upload.h"
+           #include <stdio.h>
+           #include <stdlib.h>
+          @@ -45,19 +46,22 @@ int main(int argc, char **argv) {
+                 snprintf(opt, sizeof opt, "        - %s\n", s2a_diag_issue_platform(false)); check(strstr(y, opt) != NULL, "iPhone 是模板 platform 的选项");
+                 snprintf(opt, sizeof opt, "        - %s\n", s2a_diag_issue_platform(true)); check(strstr(y, opt) != NULL, "iPad 是模板 platform 的选项");
+                 free(y); }
+          -    // 接线：diag.m 按这套判断走、只用 diag.s2arm.com
+          +    // iOS 的离线导出契约：所有旧入口也必须走本地打包和系统分享。
+               FILE *f = fopen(argv[1], "rb"); if (!f) { fprintf(stderr, "读不到 %s\n", argv[1]); return 2; }
+               fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+               char *src = malloc((size_t)n + 1); if (!src || fread(src, 1, (size_t)n, f) != (size_t)n) return 2; src[n] = 0; fclose(f);
+          -    check(count_in(src, "s2a_diag_up_verdict(") == 1, "diag.m 的上传结果走 s2a_diag_up_verdict（一处）");
+          -    check(count_in(src, "https://diag.s2arm.com/v1/upload") == 1, "上传地址是 https://diag.s2arm.com/v1/upload");
+          -    check(count_in(src, "@\"https://") == 1, "diag.m 只有这一个上传地址字面量（不用 *.workers.dev：国内不通）");
+          -    check(count_in(src, "UIPasteboard.generalPasteboard.string = code") == 1, "「复制」只复制短码");
+          -    check(count_in(src, "openURL:issue_url(code)") == 1, "「去 GitHub 发帖」打开预填诊断码的新帖页");
+          -    check(count_in(src, "a.preferredAction = post") == 1, "「去 GitHub 发帖」是主按钮");
+          -    check(count_in(src, "s2a_diag_net_denied(") == 1, "断网时按 s2a_diag_net_denied 认授权被拒");
+          +    check(!strstr(src, "NSURLSession") && !strstr(src, "NSMutableURLRequest"), "诊断实现没有网络会话或请求");
+          +    check(!strstr(src, "https://diag.s2arm.com") && !strstr(src, "upload_now("), "没有诊断上传地址或旧上传入口");
+          +    check(!strstr(src, "issue_url(") && !strstr(src, "UIPasteboard.generalPasteboard"), "不生成短码或打开报修网站");
+          +    check(strstr(src, "void s2a_diag_report(void) { s2a_diag_export(); }") != NULL, "报修入口直接导出，不经过上传表单");
+          +    check(strstr(src, "void s2a_shell_report_problem(void) { s2a_diag_report(); }") != NULL, "游戏库入口复用直接导出");
+          +    check(strstr(src, "S2AL(@\"diag.prompt.send\") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) { (void)x; s2a_diag_export(); }") != NULL, "崩溃提示的确认动作直接导出");
+          +    check(strstr(src, "getenv(\"S2A_DIAG_UPLOAD_NOW\"); if (e && *e == '1') { s2a_diag_export(); return; }") != NULL, "旧上传启动开关也只导出");
+          +    check(count_in(src, "if (g_exporting || !host) return;") == 1, "唯一导出实现保留并发及窗口检查");
+          +    check(strstr(src, "busy_done(); if (!zip) build_failed(host, err); else share_zip(host, zip);") != NULL, "打包成功分享，失败报错，均清理忙状态");
+          +    check(strstr(src, "initWithActivityItems:@[zip]") != NULL && strstr(src, "av.popoverPresentationController.sourceView = host.view") != NULL, "系统分享真实 ZIP，保留 iPad 弹窗锚点");
+               free(src);
+               if (failures) { fprintf(stderr, "t_diag_upload：%d/%d 项不符\n", failures, checks); return 1; }
+          -    printf("✓ t_diag_upload：%d 项（短码格式；网络 / 5xx 重试一次、429 / 400 / 413 不重试；授权被拒判断；平台选项对模板；地址、只复制短码、发帖主按钮接线）\n", checks);
+          +    printf("✓ t_diag_upload：%d 项（短码格式；网络 / 5xx 重试一次、429 / 400 / 413 不重试；授权被拒判断；平台选项对模板；iOS 入口只本地导出、无网络、分享与失败处理接线）\n", checks);
+               return 0;
+           }
+          diff --git a/shell/Sources/S2ArmShellBridge/include/s2a_shell.h b/shell/Sources/S2ArmShellBridge/include/s2a_shell.h
+          index d4ad1c0d..47f3daee 100644
+          --- a/shell/Sources/S2ArmShellBridge/include/s2a_shell.h
+          +++ b/shell/Sources/S2ArmShellBridge/include/s2a_shell.h
+          @@ -90,7 +90,7 @@ void *s2a_shell_cloud_sync_vc(const char *game_id, void (*done)(void *ctx), void
+           //     云端有更新 / 冲突不动，留给下次起局前的同步
+           void s2a_shell_cloud_upload_background(const char *game_id);
+           
+          -// 故障报修（游戏库设置页最下面）：实现在宿主 ios/diag.m（可不填的一句说明 → 打包上传、给短码）；本包弱定义缺省什么也不做
+          +// 本地诊断导出（游戏库设置页最下面）：实现在宿主 ios/diag.m（打包 ZIP → 系统分享面板）；本包弱定义缺省什么也不做
+           void s2a_shell_report_problem(void);
+           
+           #ifdef __cplusplus
+          diff --git a/shell/Sources/S2ArmShellHost/S2ArmGuideView.swift b/shell/Sources/S2ArmShellHost/S2ArmGuideView.swift
+          index 28f153ca..04aea123 100644
+          --- a/shell/Sources/S2ArmShellHost/S2ArmGuideView.swift
+          +++ b/shell/Sources/S2ArmShellHost/S2ArmGuideView.swift
+          @@ -94,26 +94,26 @@ struct S2ArmGuideView: View {
+               private static func rich(_ s: String) -> AttributedString { (try? AttributedString(markdown: s)) ?? AttributedString(s) }
+           
+               private func kicker(_ i: Int) -> String.LocalizationValue {
+          -        switch i { case 0: "Settings"; case 1: "Cheats"; default: "Report a problem" }
+          +        switch i { case 0: "Settings"; case 1: "Cheats"; default: "Export diagnostics" }
+               }
+               private func title(_ i: Int) -> String.LocalizationValue {
+                   switch i {
+                   case 0: "Where to find the settings"
+                   case 1: "Turn cheats on one by one"
+          -        default: "Stuck? Send us a report"
+          +        default: "Having trouble? Export diagnostics"
+                   }
+               }
+               private func lines(_ i: Int) -> [String.LocalizationValue] {
+                   switch i {
+          -        case 0: ["**Gear at the top right**: settings for the whole app, such as interface, sound and reporting a problem.",
+          +        case 0: ["**Gear at the top right**: settings for the whole app, such as interface, sound and exporting diagnostics.",
+                            "**Select a game, then the sliders button at the top (Game settings)**: this game's picture, controls, community patches and cheats.",
+                            "**In a game, the gear at the top left** opens the same game settings at any time."]
+                   case 1: ["Cheats matched to your game's version come built in, and they start **off**.",
+                            "In a game: **top-left gear → S-grade enhancements → Cheats**, then switch on the ones you want. Each takes effect in about a second.",
+                            "Or set them up before playing: **select a game → sliders button at the top → Cheats**."]
+          -        default: ["**Gear at the top right → Report a problem** at the bottom.",
+          -                  "Add a sentence about what happened (optional) and upload. You get a short code starting with **D-**; paste it in the group chat or a GitHub issue.",
+          -                  "In a game: **top-left gear → Report a problem**."]
+          +        default: ["**Gear at the top right → Export diagnostics** at the bottom.",
+          +                  "A diagnostics ZIP is created on this device. Use the share sheet to **Save to Files** or send it yourself. Nothing is uploaded automatically.",
+          +                  "In a game: **top-left gear → Export diagnostics**."]
+                   }
+               }
+           
+          @@ -268,7 +268,7 @@ private struct CheatsArt: View {
+               }
+           }
+           
+          -/// 第 3 页：游戏库设置最下面的「故障报修」→ 拿到的短码（设计尺寸 300×146）
+          +/// 第 3 页：游戏库设置最下面的「导出诊断包」→ 本地 ZIP（设计尺寸 300×146）
+           private struct ReportArt: View {
+               var body: some View {
+                   PhoneFrame {
+          @@ -281,9 +281,9 @@ private struct ReportArt: View {
+                               }
+                               HStack(spacing: 5) {
+                                   Image(systemName: "exclamationmark.bubble").font(.system(size: 8.5))
+          -                        Text(shellText("Report a problem")).font(.system(size: 8.5, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+          +                        Text(shellText("Export diagnostics")).font(.system(size: 8.5, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                                   Spacer(minLength: 4)
+          -                        Text(shellText("Report…")).font(.system(size: 7.5, weight: .bold)).foregroundStyle(.black).lineLimit(1)
+          +                        Text(shellText("Export…")).font(.system(size: 7.5, weight: .bold)).foregroundStyle(.black).lineLimit(1)
+                                       .padding(.horizontal, 7).frame(height: 15).background(ShellPalette.cream, in: Capsule())
+                               }
+                               .foregroundStyle(.white).padding(.horizontal, 7).frame(height: 24)
+          @@ -293,8 +293,8 @@ private struct ReportArt: View {
+                           Image(systemName: "arrow.right").font(.system(size: 11, weight: .bold)).foregroundStyle(Color(red: 0.96, green: 0.83, blue: 0.55))
+                               .padding(.leading, 172).padding(.top, 96)
+                           VStack(alignment: .leading, spacing: 4) {
+          -                    Text(verbatim: "D-96EB").font(.system(size: 17, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+          -                    Text(shellText("Paste this code in the group chat or a GitHub issue")).font(.system(size: 7.5)).foregroundStyle(ShellPalette.muted)
+          +                    Text(verbatim: "ZIP").font(.system(size: 17, weight: .heavy, design: .rounded)).foregroundStyle(.white)
+          +                    Text(shellText("Save or share the diagnostics ZIP")).font(.system(size: 7.5)).foregroundStyle(ShellPalette.muted)
+                                   .fixedSize(horizontal: false, vertical: true)
+                           }
+                           .padding(8).frame(width: 96, alignment: .leading)
+          diff --git a/shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift b/shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift
+          index 67973eba..2f9c492c 100644
+          --- a/shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift
+          +++ b/shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift
+          @@ -321,7 +321,7 @@ public final class S2ArmShellHostModel {
+                                onDeleteGame: { [weak self] id, saves in self?.deleteGame(id, saves: saves) },
+                                onManageSaves: { [weak self] id in self?.manageSaves(id) })
+                   actions.onReorderGames = { [weak self] sources, before in self?.reorderGames(sources, before: before) ?? false }
+          -        actions.onReportProblem = { s2a_shell_report_problem() }   // 故障报修（宿主 ios/diag.m：可不填的一句说明 + 打包上传、给短码）
+          +        actions.onReportProblem = { s2a_shell_report_problem() }   // 本地诊断导出（宿主 ios/diag.m：打包 ZIP 并打开系统分享面板）
+                   return actions
+               }
+           
+          diff --git a/shell/Sources/ShellUI/Resources/Localizable.xcstrings b/shell/Sources/ShellUI/Resources/Localizable.xcstrings
+          index 3ad7dcb5..db9fd033 100644
+          --- a/shell/Sources/ShellUI/Resources/Localizable.xcstrings
+          +++ b/shell/Sources/ShellUI/Resources/Localizable.xcstrings
+          @@ -13611,50 +13611,50 @@
+                   }
+                 }
+               },
+          -    "Report a problem": {
+          +    "Export diagnostics": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "Report a problem"
+          +            "value": "Export diagnostics"
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "故障报修"
+          +            "value": "导出诊断包"
+                     }
+                   }
+                 }
+               },
+          -    "Sends this device's logs to the developers and gives you a short code. You can add a sentence about what happened.": {
+          +    "Creates a local ZIP of diagnostics. Choose where to save or share it; nothing is uploaded automatically.": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "Sends this device's logs to the developers and gives you a short code. You can add a sentence about what happened."
+          +            "value": "Creates a local ZIP of diagnostics. Choose where to save or share it; nothing is uploaded automatically."
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "把这台设备的日志发给开发者，并给你一个短码。可以写一句发生了什么。"
+          +            "value": "在本机生成诊断 ZIP，由你选择保存或分享，不会自动上传。"
+                     }
+                   }
+                 }
+               },
+          -    "Report…": {
+          +    "Export…": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "Report…"
+          +            "value": "Export…"
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "报修…"
+          +            "value": "导出…"
+                     }
+                   }
+                 }
+          @@ -13771,34 +13771,34 @@
+                   }
+                 }
+               },
+          -    "Stuck? Send us a report": {
+          +    "Having trouble? Export diagnostics": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "Stuck? Send us a report"
+          +            "value": "Having trouble? Export diagnostics"
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "遇到问题，一键报修"
+          +            "value": "遇到问题，导出诊断包"
+                     }
+                   }
+                 }
+               },
+          -    "**Gear at the top right**: settings for the whole app, such as interface, sound and reporting a problem.": {
+          +    "**Gear at the top right**: settings for the whole app, such as interface, sound and exporting diagnostics.": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "**Gear at the top right**: settings for the whole app, such as interface, sound and reporting a problem."
+          +            "value": "**Gear at the top right**: settings for the whole app, such as interface, sound and exporting diagnostics."
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "**右上角齿轮**：整个 App 的设置，界面、声音、故障报修都在这里。"
+          +            "value": "**右上角齿轮**：整个 App 的设置，界面、声音、导出诊断包都在这里。"
+                     }
+                   }
+                 }
+          @@ -13883,50 +13883,50 @@
+                   }
+                 }
+               },
+          -    "**Gear at the top right → Report a problem** at the bottom.": {
+          +    "**Gear at the top right → Export diagnostics** at the bottom.": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "**Gear at the top right → Report a problem** at the bottom."
+          +            "value": "**Gear at the top right → Export diagnostics** at the bottom."
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "**右上角齿轮 → 最下面的「故障报修」**。"
+          +            "value": "**右上角齿轮 → 最下面的「导出诊断包」**。"
+                     }
+                   }
+                 }
+               },
+          -    "Add a sentence about what happened (optional) and upload. You get a short code starting with **D-**; paste it in the group chat or a GitHub issue.": {
+          +    "A diagnostics ZIP is created on this device. Use the share sheet to **Save to Files** or send it yourself. Nothing is uploaded automatically.": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "Add a sentence about what happened (optional) and upload. You get a short code starting with **D-**; paste it in the group chat or a GitHub issue."
+          +            "value": "A diagnostics ZIP is created on this device. Use the share sheet to **Save to Files** or send it yourself. Nothing is uploaded automatically."
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "写一句发生了什么（可以不写），点上传，会拿到一个 **D-** 开头的短码，贴到群里或 GitHub 帖子就行。"
+          +            "value": "本机会生成诊断 ZIP。通过系统分享面板选择**存储到文件**，或自行分享；不会自动上传。"
+                     }
+                   }
+                 }
+               },
+          -    "In a game: **top-left gear → Report a problem**.": {
+          +    "In a game: **top-left gear → Export diagnostics**.": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "In a game: **top-left gear → Report a problem**."
+          +            "value": "In a game: **top-left gear → Export diagnostics**."
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "游戏里：**左上角齿轮 → 故障报修**。"
+          +            "value": "游戏里：**左上角齿轮 → 导出诊断包**。"
+                     }
+                   }
+                 }
+          @@ -14059,18 +14059,18 @@
+                   }
+                 }
+               },
+          -    "Paste this code in the group chat or a GitHub issue": {
+          +    "Save or share the diagnostics ZIP": {
+                 "localizations": {
+                   "en": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "Paste this code in the group chat or a GitHub issue"
+          +            "value": "Save or share the diagnostics ZIP"
+                     }
+                   },
+                   "zh-Hans": {
+                     "stringUnit": {
+                       "state": "translated",
+          -            "value": "把这个码贴到群里或 GitHub 帖子"
+          +            "value": "保存或分享诊断 ZIP"
+                     }
+                   }
+                 }
+          diff --git a/shell/Sources/ShellUI/ShellSettingsView.swift b/shell/Sources/ShellUI/ShellSettingsView.swift
+          index 8895fb93..478ecfec 100644
+          --- a/shell/Sources/ShellUI/ShellSettingsView.swift
+          +++ b/shell/Sources/ShellUI/ShellSettingsView.swift
+          @@ -146,12 +146,12 @@ struct ShellSettingsView: View {
+                                           }.equatable()
+                                       }
+                                   }
+          -                        // S2Arm: at the bottom, "Report a problem" (the host asks for an optional sentence, then uploads the logs and shows a short code)
+          +                        // S2Arm: local diagnostics export through the host share sheet.
+                                   if let report = actions.onReportProblem {
+          -                            SettingsGroup(title: ShellStrings.text("Report a problem")) {
+          -                                SourceRow(symbol: "exclamationmark.bubble", title: ShellStrings.text("Report a problem"),
+          -                                          note: ShellStrings.text("Sends this device's logs to the developers and gives you a short code. You can add a sentence about what happened.")) {
+          -                                    Button(ShellStrings.text("Report…")) { report() }
+          +                            SettingsGroup(title: ShellStrings.text("Export diagnostics")) {
+          +                                SourceRow(symbol: "exclamationmark.bubble", title: ShellStrings.text("Export diagnostics"),
+          +                                          note: ShellStrings.text("Creates a local ZIP of diagnostics. Choose where to save or share it; nothing is uploaded automatically.")) {
+          +                                    Button(ShellStrings.text("Export…")) { report() }
+                                                   .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.report")
+                                                   .shellTarget("shs.report") { report() }
+                                           }
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- 'graphics/nvn/gfx/nvn/nvn_mtl.m' 'graphics/nvn/tests/t_nvn_warm_runtime.m' 'graphics/nvn/tests/test_warm_paths_probe.py' 'graphics/nvn/tests/warm_paths_fixture.m' 'graphics/nvn/tests/warm_paths_probe.py' 'pack/stage_inputs/shell.tsv' 'runtime/tests/mk/nvn_warm_runtime.mk'
+          git add -- 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app_settings.m ios/diag.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings pack/stage_inputs/shell.tsv runtime/tests/mk/diag_upload.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/t_diag_upload.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift
           tree="$(git write-tree)"
-          test "$tree" = "20cbe2941aa4aa4827833da581b1a9b1f520594a"
+          test "$tree" = "f3f267eaf9302b3c0a78ec8c13787f751e62531d"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
           export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
-          export GIT_AUTHOR_DATE='2026-11-15T12:00:00Z' GIT_COMMITTER_DATE='2026-11-15T12:00:00Z'
-          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.0 official render scaling with runtime-only prewarm fix; upstream dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae')"
+          export GIT_AUTHOR_DATE='2026-11-15T14:00:00Z' GIT_COMMITTER_DATE='2026-11-15T14:00:00Z'
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.0 official render scaling with runtime-only prewarm fix and local diagnostics; upstream dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae')"
           git checkout -b s2arm-2x-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
           python3 pack/shell/closure.py pyimports
@@ -705,6 +1447,23 @@ jobs:
           python3 graphics/nvn/tests/warm_paths_probe.py --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/prewarm-negative.log"
           python3 graphics/nvn/tests/warm_paths_probe.py 2>&1 | tee "$logs/prewarm-foundation.log"
           echo 'Foundation list selection: PASS (12 cases; baseline negative control). Extractor: 5 portable tests PASS. Metal archive roundtrip: pending. iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
+
+      - name: Verify local diagnostics export routes and baseline negative control
+        working-directory: source
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/s2arm-output/logs"
+          xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -Iios runtime/tests/t_diag_upload.c -o "$RUNNER_TEMP/t_diag_export"
+          set +e
+          "$RUNNER_TEMP/t_diag_export" "$RUNNER_TEMP/diag-before-local.m" .github/ISSUE_TEMPLATE/问题回报.yml > "$logs/diag-export-negative.log" 2>&1
+          baseline_rc=$?
+          set -e
+          cat "$logs/diag-export-negative.log"
+          test "$baseline_rc" = 1
+          grep -q '7/34' "$logs/diag-export-negative.log"
+          "$RUNNER_TEMP/t_diag_export" ios/diag.m .github/ISSUE_TEMPLATE/问题回报.yml 2>&1 | tee "$logs/diag-export.log"
+          python3 tools/l10n_dupkeys.py
+          echo 'Local diagnostic export: 34 portable checks PASS; baseline negative control PASS. UIKit share sheet still requires device verification.' > "$logs/diag-export-status.txt"
 
       - name: Prepare Python dependencies and timezone sources
         working-directory: source
@@ -771,7 +1530,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo 'S2ARM_CI_REVISION=4.0-upstream-scale-prewarm-fix2'
+          echo 'S2ARM_CI_REVISION=4.0-upstream-scale-prewarm-localdiag1'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
           "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"
@@ -845,11 +1604,12 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.4.0 official render scaling + runtime-only prewarm fix2; default 1x"
+            echo "Custom build: S2Arm 0.4.0 official render scaling + runtime-only prewarm fix2 + local diagnostics export; default 1x"
             echo "Upstream baseline: dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
             cat "$output/logs/prewarm-status.txt"
+            cat "$output/logs/diag-export-status.txt"
             echo "Compatible existing resources can be reused. Rebuild resources with 0.4.0 for the new shader translation speed-up."
             echo "iPhone gameplay and visual quality are not verified by this workflow."
             echo "Source: https://github.com/jhaizhou-ops/S2Arm"
@@ -864,17 +1624,18 @@ jobs:
           git bundle verify "$output/artifact/S2Arm-source.bundle"
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
           cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"
+          cp "$output/logs/diag-export-status.txt" "$output/artifact/diag-export-status.txt"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
           printf '0.4.0\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-0.4.0-Shell-2x-PSOFix from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. GPU visuals remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt diag-export-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
+          echo 'Shell build completed. Download S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. GPU visuals and export UI remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.4.0-Shell-2x-PSOFix
+          name: S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0

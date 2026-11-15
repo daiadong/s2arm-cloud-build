@@ -3,12 +3,12 @@
 # Self-contained: the patch and matching-source packaging are included below.
 # GPU eligibility checks unified memory, Metal4 and residency creation.
 # Runtime-only PSO prewarm fix plus local iOS diagnostics export; source / closure checks stay enabled.
-name: S2Arm 0.4.0 Shell 2x PSOFix LocalDiag (macOS)
+name: S2Arm 0.4.0 Shell 2x PSOFix LocalDiag AirPlaySpeed (macOS)
 
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/s2arm-040-localdiag']
+    branches: ['codex/s2arm-airplay-botw-speed']
     paths: ['.github/workflows/s2arm-shell.yml']
 
 permissions:
@@ -114,13 +114,21 @@ jobs:
           git show HEAD:ios/diag.m > "$RUNNER_TEMP/diag-before-local.m"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
           diff --git "a/docs/\345\235\221\350\256\260\345\275\225.md" "b/docs/\345\235\221\350\256\260\345\275\225.md"
-          index 1d14d3f1..85131ade 100644
+          index 1d14d3f1..61c6d58b 100644
           --- "a/docs/\345\235\221\350\256\260\345\275\225.md"
           +++ "b/docs/\345\235\221\350\256\260\345\275\225.md"
-          @@ -2,6 +2,14 @@
+          @@ -2,6 +2,22 @@
            
            从这里开始记录，每条写现象、根因、改法。
            
+          +## 11-15 自定义版：30 Hz 外屏接管与 BOTW 1.9.0 速度表缺失
+          +
+          +**证据**：诊断日志在 1920×1080 / 最高 30 Hz 外屏接管后，帧时间中位数由 16.69 ms 变为 32.82 ms，GPU 仍约 5.50 ms；Acquire 等显示链拍号及交换链纹理归还，单独改软件计时不能解除这两处反压。低于 60 Hz 的已知外屏改走系统镜像，禁用 scene accessory 并先将游戏层移回手机，再释放外屏窗口；只按物理屏连接 / 模式通知恢复登记，避免 accessory 断开引发重连循环。
+          +
+          +**速度修复**：日志里的 BOTW 主程序 CD57B23FA4BBAD65 对应 1.9.0，仓库只有旧版表。按该版本公开条目的地址语义增加动态游戏 / UI 步长、DR 系数、按键重复和过场限帧；新表用 `timing compensated` 明确启用，不重新开启所有旧式帧率表。该标记要求改写器核对 NSO 构建号及全部原字，原字不符、越界或补偿指令生成缺口均失败退出，不能带着缺失的补偿继续出包。
+          +
+          +**验证边界**：外屏策略 9 项、真实 fps.c 配版本表 22 项通过；新表以合成 NSO 检查实际 C 改写产物与拒绝错误输入。用户朋友持有游戏，未取得真实 NSO，表内原字仍需打包核验。Windows 本地验证不等于 UIKit 编译或真机通过；系统镜像能否维持手机 60 帧、连接 / 断开 / 前后台仍待同设备实测。
+          +
           +## 11-15 自定义 iOS 版：诊断入口直接本地导出
           +
           +**现象**：用户需要本地 ZIP，游戏菜单、游戏库设置和崩溃提示却先走诊断服务器上传，拿到短码后才能选择导出。
@@ -658,6 +666,168 @@ jobs:
                if (![u boolForKey:kOpenToggle]) return;
                [u setBool:NO forKey:kOpenToggle]; s2a_diag_export();
            }
+          diff --git a/ios/ext_display_policy.h b/ios/ext_display_policy.h
+          new file mode 100644
+          index 00000000..6f3d4c87
+          --- /dev/null
+          +++ b/ios/ext_display_policy.h
+          @@ -0,0 +1,9 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +#ifndef S2A_EXT_DISPLAY_POLICY_H
+          +#define S2A_EXT_DISPLAY_POLICY_H
+          +// Whether a connected screen may own the game's presentation layer.
+          +static inline int s2a_ext_native_allowed(long maximum_fps) {
+          +    return maximum_fps <= 0 || maximum_fps >= 60;
+          +}
+          +#endif
+          diff --git a/ios/extdisplay.m b/ios/extdisplay.m
+          index f0da3cfb..a1199311 100644
+          --- a/ios/extdisplay.m
+          +++ b/ios/extdisplay.m
+          @@ -4,17 +4,21 @@
+           //   用 iOS 27 SDK 链接的 App，系统不再自动给外接屏场景（Info.plist 里声明场景角色也不给，11-10 iPhone 18 Pro 实测）：要在主界面的视图控制器上
+           //   登记场景配件（UISceneAccessory），控制器在屏上、登记启用、显示器接着时系统才连场景。s2a_ios_ext_register 由游戏界面控制器 S2AGameVC
+           //   建好时调（ios/app.m）；游戏库界面不登记 = 照旧镜像。iOS 18–26 没有这套接口，照旧镜像。
+          -//   窗口到直连出图层要挂时才建（s2a_ios_present_view，graphics/nvn/host_adapt.m 调）：加载页期间没有出图层，外接屏照旧镜像手机屏。
+          +//   窗口到直连出图层要挂时才建（s2a_ios_present_view，graphics/nvn/host_adapt.m 调）。
+          +//   已知低于 60 Hz 的外屏不接管：禁用场景配件，游戏层留在手机屏，交给系统镜像。否则显示链 / 纹理归还会把 60 帧游戏拖到外屏帧率。
+           //   出图层在外接屏上时，手机屏留触屏手柄 / 提示页 / 开发浮层；屏幕比例改按外接屏算（ios/app.m screen_ratio），拔掉后出图层回手机屏。
+           //   开关：S2A_EXT_DISPLAY=0 = 不登记、不接管外接屏（照旧镜像）。
+           #import <UIKit/UIKit.h>
+           #include <stdatomic.h>
+           #include "native.h"
+          +#include "ext_display_policy.h"
+           UIView *s2a_ios_root_view(void);                               // app.m
+           void s2a_direct_relayout(void) __attribute__((weak_import));   // graphics/nvn/host_adapt.m：出图层按当前出图视图重挂 / 重摆（没链直连层的壳没有这个符号）
+           
+           static UIWindowScene *g_scene;   // 外接屏场景（主线程）；nil = 没接
+           static UIWindow *g_window;       // 外接屏窗口（主线程）；出图层第一次要挂时才建
+          +static __weak id g_registration; // S2AGameVC 持有；不延长游戏界面的生命周期
+          +static long g_mirror_hz;         // 仅用于路由变更日志；不以 accessory scene 断开判断物理拔线
+           static _Atomic double g_ratio;   // 外接屏 宽 ÷ 高；0 = 没接。外接屏不随手机转向，不取长边 ÷ 短边（竖放的显示器按窄屏加高）
+           double s2a_ios_ext_ratio(void) { return g_ratio; }
+           // 主线程菜单查询：低版本 / 镜像模式也算已接屏，不创建窗口或接管镜像。
+          @@ -22,25 +26,68 @@ BOOL s2a_ios_ext_connected(void) { return g_scene != nil || UIScreen.screens.cou
+           static void note_ratio(CGSize z) { if (z.width > 0 && z.height > 0) g_ratio = z.width / z.height; }
+           static int ext_on(void) { const char *e = getenv("S2A_EXT_DISPLAY"); return !(e && !strcmp(e, "0")); }
+           
+          +static void return_to_phone(void) {
+          +    UIWindow *w = g_window; g_scene = nil; g_window = nil; g_ratio = 0;
+          +    if (s2a_direct_relayout) s2a_direct_relayout(); // 先迁层，再释放它原来所在的窗口
+          +    w.hidden = YES;
+          +}
+          +
+          +static void set_mirror_route(long hz) {
+          +    if (g_mirror_hz != hz) LOG("外接屏：最高 %ld Hz，保留手机渲染并使用系统镜像，避免外屏节拍限制游戏", hz);
+          +    g_mirror_hz = hz;
+          +    if (g_scene || g_window || g_ratio) return_to_phone();
+          +    if (@available(iOS 27.0, *)) ((UISceneAccessoryRegistration *)g_registration).enabled = NO;
+          +}
+          +
+          +// 配件断开不等于物理拔线。只按 UIScreen 的连接 / 模式更新恢复配件，避免低刷屏反复连接场景。
+          +static void refresh_screen_route(UIScreen *disconnected) {
+          +    UIScreen *phone = s2a_ios_root_view().window.screen ?: UIScreen.screens.firstObject;
+          +    for (UIScreen *sc in UIScreen.screens) {
+          +        if (sc == phone || sc == disconnected) continue;
+          +        if (!s2a_ext_native_allowed(sc.maximumFramesPerSecond)) { set_mirror_route(sc.maximumFramesPerSecond); return; }
+          +    }
+          +    g_mirror_hz = 0;
+          +    if (@available(iOS 27.0, *)) ((UISceneAccessoryRegistration *)g_registration).enabled = YES;
+          +}
+          +
+          +static void observe_screens(void) {
+          +    static dispatch_once_t once;
+          +    dispatch_once(&once, ^{
+          +        NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+          +        for (NSNotificationName name in @[UIScreenDidConnectNotification, UIScreenDidDisconnectNotification, UIScreenModeDidChangeNotification]) {
+          +            [nc addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+          +                UIScreen *gone = [note.name isEqualToString:UIScreenDidDisconnectNotification] ? note.object : nil;
+          +                if (gone && g_scene.screen == gone) return_to_phone();
+          +                refresh_screen_route(gone);
+          +            }];
+          +        }
+          +    });
+          +}
+          +
+           @interface S2AExternalVC : UIViewController
+           @end
+           @implementation S2AExternalVC
+           - (void)viewDidLayoutSubviews {   // 外接屏换了显示模式：比例跟着换，出图层重摆
+               [super viewDidLayoutSubviews];
+               if (!g_window || self != g_window.rootViewController) return;   // 断开后迟到的布局回调不许把比例写回去
+          +    refresh_screen_route(nil);
+          +    if (!g_window || self != g_window.rootViewController) return;
+               note_ratio(self.view.bounds.size);
+               if (s2a_direct_relayout) s2a_direct_relayout();
+           }
+           @end
+           
+          -// 出图层该挂的视图（主线程）：外接屏接着 = 外接屏窗口的视图（这时才建窗口，系统停止镜像），否则 App 根视图
+          +// 出图层该挂的视图（主线程）：已选原生外屏才建窗口；低刷镜像 / 未接屏返回手机视图。
+           UIView *s2a_ios_present_view(void) {
+               if (!g_scene) return s2a_ios_root_view();
+               if (!g_window) {
+          -        UIWindow *w = [[UIWindow alloc] initWithWindowScene:g_scene];
+          +        UIWindowScene *scene = g_scene;
+          +        UIWindow *w = [[UIWindow alloc] initWithWindowScene:scene];
+                   UIViewController *vc = [S2AExternalVC new]; vc.view.backgroundColor = UIColor.blackColor;
+                   w.rootViewController = vc; g_window = w;   // 先记下再显示：显示时的布局回调会回到 s2a_direct_relayout → 本函数
+                   w.hidden = NO; vc.view.frame = w.bounds;
+          +        // 显示 / 布局可重入并切回镜像：不得把已退役窗口的比例写回，也不得返回 nil 使首次 Metal 层创建跳过。
+          +        if (g_scene != scene || g_window != w) return s2a_ios_root_view();
+                   note_ratio(w.bounds.size);
+                   LOG("外接屏：窗口已建 %.0fx%.0f 点，接管这块屏（不再镜像手机屏）", w.bounds.size.width, w.bounds.size.height);
+               }
+          @@ -54,22 +101,30 @@ UIView *s2a_ios_present_view(void) {
+               (void)session; (void)options;
+               if (![scene isKindOfClass:UIWindowScene.class]) return;
+               UIWindowScene *ws = (UIWindowScene *)scene; UIScreen *sc = ws.screen;
+          +    if (!s2a_ext_native_allowed(sc.maximumFramesPerSecond)) {
+          +        set_mirror_route(sc.maximumFramesPerSecond);
+          +        // registerSceneAccessory 可能在返回登记对象前触发本回调；下一轮再关闭已保存的登记。
+          +        dispatch_async(dispatch_get_main_queue(), ^{ refresh_screen_route(nil); });
+          +        return;
+          +    }
+               // 过扫描补偿不是「不补偿」时（UIScreen.h 写的缺省是缩放：整幅画面缩小一圈、四周留黑）改成不补偿，画面 1:1 铺满显示器。
+               //   11-10 iPhone 18 Pro / iOS 27 接 2560x1440 显示器，连上时读到的已是 2（不补偿），这一行没有动作
+               if (sc.overscanCompensation != UIScreenOverscanCompensationNone) {
+                   LOG("外接屏：过扫描补偿 %ld 改成不补偿", (long)sc.overscanCompensation); sc.overscanCompensation = UIScreenOverscanCompensationNone; }
+               CGSize z = sc.bounds.size, n = sc.nativeBounds.size, m = sc.currentMode.size;
+               g_scene = ws; note_ratio(z);
+          -    LOG("外接屏：已连上 %.0fx%.0f 点、%.0fx%.0f 像素（倍数 %.2f，显示模式 %.0fx%.0f，最高 %ld Hz，比例 %.3f）；出图层挂上后接管，之前照旧镜像",
+          +    LOG("外接屏：已连上 %.0fx%.0f 点、%.0fx%.0f 像素（倍数 %.2f，显示模式 %.0fx%.0f，最高 %ld Hz，比例 %.3f）；选择原生外屏",
+                   z.width, z.height, n.width, n.height, sc.nativeScale, m.width, m.height, (long)sc.maximumFramesPerSecond, (double)g_ratio);
+               if (s2a_direct_relayout) s2a_direct_relayout();   // 局中接上：出图层挪过来
+           }
+           - (void)sceneDidDisconnect:(UIScene *)scene {
+               if (scene != g_scene) return;
+          -    UIWindow *w = g_window; g_scene = nil; g_window = nil; g_ratio = 0;
+               LOG("外接屏：已断开");
+          -    if (s2a_direct_relayout) s2a_direct_relayout();   // 先把出图层挪回手机屏，再放掉窗口
+          -    w.hidden = YES;
+          +    return_to_phone();
+          +}
+          +- (void)windowScene:(UIWindowScene *)scene didUpdateCoordinateSpace:(id<UICoordinateSpace>)space interfaceOrientation:(UIInterfaceOrientation)orientation traitCollection:(UITraitCollection *)traits {
+          +    (void)space; (void)orientation; (void)traits;
+          +    if (scene == g_scene) refresh_screen_route(nil);
+           }
+           @end
+           
+          @@ -77,10 +132,13 @@ UIView *s2a_ios_present_view(void) {
+           id s2a_ios_ext_register(UIViewController *vc) {
+               if (!vc || !ext_on()) return nil;
+               if (@available(iOS 27.0, *)) {
+          +        observe_screens();
+                   // 委托类写在代码里、不取配置名：Info.plist 里不用声明外接屏场景
+                   UISceneConfiguration *cfg = [[UISceneConfiguration alloc] initWithName:nil sessionRole:UIWindowSceneSessionRoleExternalDisplayNonInteractive];
+                   cfg.delegateClass = S2AExternalSceneDelegate.class;
+                   UISceneAccessoryRegistration *reg = [vc registerSceneAccessory:[UISceneAccessory externalNonInteractiveSceneAccessoryWithConfiguration:cfg]];
+          +        g_registration = reg;
+          +        refresh_screen_route(nil); // 启动前已经连接的 30 Hz AirPlay 也必须走镜像
+                   LOG("外接屏：场景配件已登记（启用 %d，显示器可用 %d）", (int)reg.enabled, (int)reg.available);
+                   return reg;
+               }
           diff --git a/ios/l10n/en.lproj/S2ArmHost.strings b/ios/l10n/en.lproj/S2ArmHost.strings
           index 5adc630d..9713c20a 100644
           --- a/ios/l10n/en.lproj/S2ArmHost.strings
@@ -1043,6 +1213,160 @@ jobs:
           +入	tests
           +入	tools
           +入	translator
+          diff --git a/runtime/fps/cd57b23fa4bbad65.tsv b/runtime/fps/cd57b23fa4bbad65.tsv
+          new file mode 100644
+          index 00000000..b4a447d2
+          --- /dev/null
+          +++ b/runtime/fps/cd57b23fa4bbad65.tsv
+          @@ -0,0 +1,22 @@
+          +# BOTW 1.9.0 / 01007EF00011E000 / CD57B23FA4BBAD65803D9788C01821EE
+          +# 地址与语义据 FPSLocker-Warehouse v4 同 BID 条目（blob 624128a0f1a1a5ebcd7da7d8317a1f40de97b054）。
+          +# 未拿到真实 NSO：原字是待打包核验的语义预期，不是实机已验证。timing compensated 要求所有 c 行原字匹配，否则打包失败。
+          +# 只启用这张表的速度补偿；不恢复全局 S2A_CAPS_OWN。开关仍遵守 S2A_FPS60。
+          +build cd57b23fa4bbad65
+          +timing compensated
+          +present display
+          +c main 0xe93dc8 word 3942f661 52800021
+          +c main 0x151d448 word 340001a8 14000003
+          +c main 0x151d46c adrp_slot 1e221862 x9
+          +c main 0x151d470 ldr_slot 1e210841 s1 x9 2040
+          +c main 0x1280ed8 adrp_slot 1e2c1001 x7
+          +c main 0x1280ee4 ldr_slot 1e210800 s0 x7 2040
+          +c main 0x12670a4 adrp_slot 52a85908 x8
+          +c main 0x12670ac ldr_slot 1e270101 s1 x8 2041
+          +c main 0xd13910 bl_rec 97ffde3e w1 2042
+          +c main 0xd140d0 bl_rec 97ffdc4e w1 2042
+          +slot 2041 f32 200 100
+          +slot 2042 i32 1
+          +speed 2040 0.5 2.0
+          +present30 if slot 2042 == 0
+          +w main 0x1dad0e0 f32 0.5 off 1
+          diff --git a/runtime/rewriter/rewriter.c b/runtime/rewriter/rewriter.c
+          index 276e0798..91340355 100644
+          --- a/runtime/rewriter/rewriter.c
+          +++ b/runtime/rewriter/rewriter.c
+          @@ -124,6 +124,8 @@ typedef struct {
+           } DetailCache;
+           typedef struct {
+             s2a_rewrite_request r;
+          +  uint8_t build_id[16];
+          +  int fps_compensated;
+             FILE *log, *out;
+             csh cs;
+             cs_insn* one;
+          @@ -3702,20 +3704,35 @@ static int fps_reg(const char* s, char kind) {
+           static int fps_skip;
+           static int fps_precheck(FILE* f) {
+             char line[512], bad[400] = "";
+          -  int nbad = 0;
+          +  char build[80] = "";
+          +  int nbad = 0, out_of_range = 0;
+             while (fgets(line, sizeof(line), f)) {
+               char* h = strchr(line, '#');
+               if (h) *h = 0;
+               char *t0 = strtok(line, " \t\r\n"), *mod = strtok(NULL, " \t\r\n"), *offs = strtok(NULL, " \t\r\n"), *kind = strtok(NULL, " \t\r\n"),
+                    *origs = strtok(NULL, " \t\r\n");
+          +    if (t0 && eq(t0, "timing") && mod && eq(mod, "compensated")) g->fps_compensated = 1;
+          +    if (t0 && eq(t0, "build") && mod) snprintf(build, sizeof(build), "%s", mod);
+               if (!t0 || !eq(t0, "c") || !mod || !eq(mod, g->r.module) || !offs || !kind || !origs) continue;
+               A off = strtoll(offs, NULL, 16);
+          -    if (off < 0 || off % 4 || off + 4 > (A)g->text || iw(off) == (uint32_t)strtoul(origs, NULL, 16)) continue; /* 越界的行留给逐行处理记缺口 */
+          +    if (off < 0 || off % 4 || off > (A)g->text - 4) { out_of_range++; continue; } /* 旧表越界仍留给逐行处理记缺口 */
+          +    if (iw(off) == (uint32_t)strtoul(origs, NULL, 16)) continue;
+               size_t k = strlen(bad);
+               if (k + 24 < sizeof(bad)) snprintf(bad + k, sizeof(bad) - k, "%s0x%llx", nbad ? " " : "", (unsigned long long)off);
+               nbad++;
+             }
+             rewind(f);
+          +  if (g->fps_compensated) {
+          +    if (eq(g->r.module, "main")) {
+          +      char actual[33];
+          +      for (int i = 0; i < 16; i++) snprintf(actual + 2 * i, 3, "%02x", g->build_id[i]);
+          +      size_t n = strlen(build);
+          +      int same = n >= 16 && n <= 32;
+          +      for (size_t i = 0; same && i < n; i++) same = tolower((unsigned char)build[i]) == actual[i];
+          +      if (!same) { fclose(f); fail("compensated FPS table build does not match main NSO"); }
+          +    }
+          +    if (nbad || out_of_range) { fclose(f); fail("compensated FPS table: %d original-word mismatches, %d out-of-range rows; refusing partial speed patch", nbad, out_of_range); }
+          +  }
+             if (!nbad) return 0;
+             fprintf(stderr, "[黄] %s 帧率表 %d 行原字不符（%s；版本不同或表错），本模块的改指令行整组不改\n", g->r.module, nbad, bad);
+             bump("fps_orig_skip");
+          @@ -3733,6 +3750,7 @@ static void fps_rows(int phase) {
+             }
+             if (phase == 0) fps_skip = fps_precheck(f);
+             if (fps_skip) { fclose(f); return; }
+          +  size_t gaps_before = g->gaps.n;
+             char line[512];
+             while (fgets(line, sizeof(line), f)) {
+               char* h = strchr(line, '#');
+          @@ -3818,6 +3836,7 @@ static void fps_rows(int phase) {
+               bump(keystr);
+             }
+             fclose(f);
+          +  if (g->fps_compensated && g->gaps.n != gaps_before) fail("compensated FPS table: rewrite gap; refusing partial speed patch");
+           }
+           /* 社区补丁双路（S2A_CPATCH_TSV，pack/cpatch.py 出；直连线 10-27，与 patch_nso.py 同语义同字节）：
+            *   w <模块> <偏移> <原字> <新字>        分析前原位常写（补丁往填充区写的新代码：关着时没有入口跳过来，照样经过本改写器翻译）
+          @@ -5125,6 +5144,7 @@ static void load(void) {
+             REQUIRE(fread(src, 1, n, f) == (size_t)n);
+             closeout();
+             REQUIRE(!memcmp(src, "NSO0", 4));
+          +  memcpy(g->build_id, src + 0x40, sizeof(g->build_id));
+             uint32_t fo[3], mo[3], sz[3], csz[3];
+             for (int i = 0; i < 3; i++) {
+               fo[i] = u32(src + 0x10 + 16 * i);
+          diff --git a/runtime/src/fps.c b/runtime/src/fps.c
+          index 5b737a4a..f2302843 100644
+          --- a/runtime/src/fps.c
+          +++ b/runtime/src/fps.c
+          @@ -7,6 +7,7 @@
+           //   word 改指令行已打进代码、改不回（日志黄一行）。
+           // 行（# 起注释）：
+           //   build <主程序构建号前 16 位>      与 s2a_main_build_id 不符整表不用（报红：表配错款 / 版本）
+          +//   timing compensated              精确构建的动态速度表：不依赖旧式全局开关；须有匹配 build、有效 speed，出包时所有改指令行强校验
+           //   present display                  出图不按游戏设的间隔、每个显示节拍一帧（同 DM_PRESENT_INTERVAL=display，hle_nvn.c；只在没显式给时设）
+           //   w <模块> <偏移> i32|f32 <值> [*<偏移2>]   游戏数据区的值，装载后每 100 ms 写一次（游戏自己会改回的变量，如巫师3 的 LimitFPS）；只许写数据段。
+           //                                    带 *<偏移2>：<模块>+<偏移> 处是指针（游戏堆里的对象，如虚幻 4 控制台变量），写到「指针 + 偏移2」；指针为空（还没初始化）就等下一轮，
+          @@ -73,7 +74,7 @@ static _Atomic int g_ab;   // 同局 A/B 阶段：0 照常、1 回原帧率、2
+           static int ab_mode(void) { const char *e = getenv("S2A_FPS_AB"); return e && !strcmp(e, "1"); }   // 每次读：单测中途设；每帧一次 getenv 不贵
+           // 档位梯子压回原生帧率（runtime/src/qladder.c，维护者 11-06 优雅降级）：60 帧开着、按档位暂时退回游戏原帧率，放开就回 60（与降档原因同一条热切路径，不动用户开关）
+           static _Atomic int g_hold;
+          -// 我方帧率表那一半（槽 / w 行 / 宿主帧步 / 放开出图间隔）只在旧口径（S2A_CAPS_OWN=1，caps.h s2a_caps_own）按 60 帧开关生效，缺省一律按「关」写
+          +// 旧表只在 S2A_CAPS_OWN=1 下按 60 帧开关生效。显式 timing compensated 的精确构建动态速度表也按开关生效，其余缺省按「关」写。
+           //   （11-14 撤我方 60 帧）。表照装：改写器打进游戏代码的读槽指令一直在，槽必须有 30 帧口径的值——11-14 起初整张表不装，槽留 0，
+           //   带表的包起局后游戏步长读到 0、停在加载黑屏（iPhone 实机同包同局：纯主线进局、不装表的一直黑屏）。60 帧开关此后只管社区帧率补丁（cpatch_follow 照跟 eff）
+           static int g_own;
+          @@ -270,7 +271,7 @@ void s2a_fps_start(const char *dir) {
+               if (e && *e) strlcpy(path, e, sizeof path); else snprintf(path, sizeof path, "%s/fps.tsv", dir);
+               FILE *f = fopen(path, "r"); if (!f) { start_published(s2a_cpatch_fps_count() > 0, 0); return; }
+               g_boot_file = f;
+          -    char line[256]; int present = 0, bad = 0; const char *bid = s2a_main_build_id();
+          +    char line[256]; int present = 0, bad = 0, matched_build = 0, compensated = 0; const char *bid = s2a_main_build_id();
+               while (fgets(line, sizeof line, f)) {
+                   // 超出缓冲的行（11-06 旷野之息表：中文注释 279 / 293 字节）：读完这一行剩下的部分丢掉，不当下一行解析（原先剩下那截报「不认的行」红）。
+                   //   超出的部分落在注释里（前半截已有 #）照常用；数据段本身超长整行报红、不用
+          @@ -287,7 +288,8 @@ void s2a_fps_start(const char *dir) {
+                   //   现在至少 16 位且全是十六进制才算，不合格按对不上处理（整表不用、报红）
+                   if (!strcmp(a, "build") && n >= 2) { size_t bl = strlen(b); int ok = bl >= 16 && strspn(b, "0123456789abcdefABCDEF") == bl;
+                       if (!ok) LOG("【红】帧率表 %s 的 build 行「%s」不是至少 16 位的十六进制构建号：按对不上处理", path, b);
+          -            if (!ok || strncasecmp(bid, b, bl)) { LOG("【红】帧率表 %s 是构建号 %s 的，本包主程序是 %s：整表不用", path, b, bid); fclose(f); g_boot_file = NULL; start_published(s2a_cpatch_fps_count() > 0, 0); return; } continue; }
+          +            if (!ok || strncasecmp(bid, b, bl)) { LOG("【红】帧率表 %s 是构建号 %s 的，本包主程序是 %s：整表不用", path, b, bid); fclose(f); g_boot_file = NULL; start_published(s2a_cpatch_fps_count() > 0, 0); return; } matched_build = 1; continue; }
+          +        if (!strcmp(a, "timing") && n == 2 && !strcmp(b, "compensated")) { compensated = 1; continue; }
+                   if (!strcmp(a, "present") && n >= 2 && !strcmp(b, "display")) { present = 1; continue; }
+                   if (!strcmp(a, "c")) { key_rw(mod_named(b)); if (n >= 4 && !strcmp(t, "word")) g_word_rows++; continue; }   // 改指令：出包时改写器已经打进去；bl_rec 跳板运行时写键页
+                   if (!strcmp(a, "slot") || !strcmp(a, "speed") || !strcmp(a, "present30")) {
+          @@ -331,6 +333,10 @@ void s2a_fps_start(const char *dir) {
+                   LOG("【红】帧率表 %s：不认的行「%s」", path, line); bad++;
+               }
+               fclose(f); g_boot_file = NULL;
+          +    if (compensated && matched_build && g_spd_slot >= 0 && !bad) {
+          +        g_own = 1;
+          +        LOG("帧率表：compensated 动态速度补偿，精确构建匹配，跟随 60 帧开关");
+          +    } else if (compensated) LOG("【红】帧率表：compensated 缺少有效 build / speed 或含坏行，不启用动态速度补偿");
+               // 出图间隔只在起局开时放开（关 = 三层都不动，L1 交换间隔按游戏）。原先开关都设 display、靠每帧钩子退回游戏间隔：出图虽回到游戏间隔，
+               //   只看 display 模式的路径（hle_nvn.c nvn_game_fps → 帧节拍行 / 显示链接目标 / 浮层目标）照报 60（10-28 巫师3 关局：host.log「帧节拍 … 60 帧/秒」，frames.tsv 实测 30）。
+               //   代价：起局关、运行中 s2a_fps_set_enabled(1) 不放开出图间隔（产品开关是起局环境变量 S2A_FPS60、下次启动生效，没有运行中开的调用方）
           diff --git a/runtime/tests/mk/diag_upload.mk b/runtime/tests/mk/diag_upload.mk
           index bf202d80..98833d87 100644
           --- a/runtime/tests/mk/diag_upload.mk
@@ -1053,6 +1377,33 @@ jobs:
            NATIVE_TEST_OWN += diag_upload
            .PHONY: native-test-diag_upload
            native-test-diag_upload:
+          diff --git a/runtime/tests/mk/ext_display_policy.mk b/runtime/tests/mk/ext_display_policy.mk
+          new file mode 100644
+          index 00000000..2c8efc1e
+          --- /dev/null
+          +++ b/runtime/tests/mk/ext_display_policy.mk
+          @@ -0,0 +1,7 @@
+          +NATIVE_TEST_OWN += ext_display_policy
+          +.PHONY: native-test-ext_display_policy
+          +native-test-ext_display_policy:
+          +	@mkdir -p $(BUILD)/tests
+          +	$(CC) $(CFLAGS) -Iios runtime/tests/t_ext_display_policy.c -o $(BUILD)/tests/t_ext_display_policy
+          +	$(BUILD)/tests/t_ext_display_policy
+          +TEST_TARGETS += native-test-ext_display_policy
+          diff --git a/runtime/tests/mk/fps_compensated.mk b/runtime/tests/mk/fps_compensated.mk
+          new file mode 100644
+          index 00000000..007f07e1
+          --- /dev/null
+          +++ b/runtime/tests/mk/fps_compensated.mk
+          @@ -0,0 +1,8 @@
+          +# Real FPS core + versioned table. No game assets or platform memory required.
+          +NATIVE_TEST_OWN += fps_compensated
+          +.PHONY: native-test-fps_compensated
+          +native-test-fps_compensated:
+          +	@mkdir -p $(BUILD)/tests
+          +	$(CC) $(CFLAGS) $(NATIVE_INC) -DS2A_UNIT_TEST -pthread -o $(BUILD)/tests/t_fps_compensated runtime/tests/t_fps_compensated.c runtime/src/fps.c
+          +	$(BUILD)/tests/t_fps_compensated runtime/fps/cd57b23fa4bbad65.tsv runtime/fps/de0b6ac4efc1dda7.tsv
+          +TEST_TARGETS += native-test-fps_compensated
           diff --git a/runtime/tests/mk/nvn_warm_runtime.mk b/runtime/tests/mk/nvn_warm_runtime.mk
           new file mode 100644
           index 00000000..7f853708
@@ -1122,6 +1473,103 @@ jobs:
           +    printf("✓ t_diag_upload：%d 项（短码格式；网络 / 5xx 重试一次、429 / 400 / 413 不重试；授权被拒判断；平台选项对模板；iOS 入口只本地导出、无网络、分享与失败处理接线）\n", checks);
                return 0;
            }
+          diff --git a/runtime/tests/t_ext_display_policy.c b/runtime/tests/t_ext_display_policy.c
+          new file mode 100644
+          index 00000000..a8d4ecc9
+          --- /dev/null
+          +++ b/runtime/tests/t_ext_display_policy.c
+          @@ -0,0 +1,20 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +#include <stdio.h>
+          +#include "ext_display_policy.h"
+          +int main(void) {
+          +    const struct { long hz; int native; } cases[] = {
+          +        {-1, 1}, {0, 1}, {24, 0}, {30, 0}, {50, 0}, {59, 0},
+          +        {60, 1}, {90, 1}, {120, 1}
+          +    };
+          +    int bad = 0;
+          +    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+          +        int got = s2a_ext_native_allowed(cases[i].hz);
+          +        if (got != cases[i].native) {
+          +            fprintf(stderr, "FAIL %ld Hz: native=%d, expected %d\n", cases[i].hz, got, cases[i].native);
+          +            bad++;
+          +        }
+          +    }
+          +    printf("external screen policy: %d/9 PASS\n", 9 - bad);
+          +    return bad != 0;
+          +}
+          diff --git a/runtime/tests/t_fps_compensated.c b/runtime/tests/t_fps_compensated.c
+          new file mode 100644
+          index 00000000..39df8315
+          --- /dev/null
+          +++ b/runtime/tests/t_fps_compensated.c
+          @@ -0,0 +1,65 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +// Real fps.c and shipped table; fake only loader/platform memory boundaries.
+          +#include "../src/native.h"
+          +#include <errno.h>
+          +#include <math.h>
+          +S2A_TEST_MOD_TABLE(64); int g_nmod;
+          +static const char *build = "cd57b23fa4bbad65803d9788c01821ee";
+          +const char *s2a_main_build_id(void) { return build; }
+          +int s2a_key_page_writable(module_t *m) { (void)m; return 0; }
+          +uint64_t plat_now_ns(void) { return 1000000000ull; }
+          +int plat_thread_name(const char *name) { (void)name; return 0; }
+          +int plat_mem_read32(uint64_t a, uint32_t *v) { (void)a; (void)v; return EFAULT; }
+          +int plat_mem_write32(uint64_t a, uint32_t v) { (void)a; (void)v; return EFAULT; }
+          +uint8_t plat_guest_load8(uint64_t a) { return __atomic_load_n((uint8_t *)(uintptr_t)a, __ATOMIC_RELAXED); }
+          +uint32_t plat_guest_load32(uint64_t a) { return __atomic_load_n((uint32_t *)(uintptr_t)a, __ATOMIC_RELAXED); }
+          +uint64_t plat_guest_load64(uint64_t a) { return __atomic_load_n((uint64_t *)(uintptr_t)a, __ATOMIC_RELAXED); }
+          +void plat_guest_store32(uint64_t a, uint32_t v) { __atomic_store_n((uint32_t *)(uintptr_t)a, v, __ATOMIC_RELAXED); }
+          +void s2a_fps_start(const char *dir);
+          +int s2a_fps_present_at(uint64_t now), s2a_fps_session_stop(void), s2a_fps_session_reset(void), s2a_fps_real_source(void);
+          +void s2a_fps_set_enabled(int on);
+          +static int fails, checks;
+          +static void check(const char *what, int ok) { checks++; if (!ok) { fprintf(stderr, "FAIL %s\n", what); fails++; } }
+          +static float slot(int n) { float f; memcpy(&f, g_mod[0].base + g_mod[0].key_page_off + n * 8, 4); return f; }
+          +static void reset(void) {
+          +    check("stop", s2a_fps_session_stop() == 0);
+          +    check("reset", s2a_fps_session_reset() == 0);
+          +}
+          +int main(int argc, char **argv) {
+          +    if (argc != 3) { fprintf(stderr, "usage: test compensated-table legacy-table\n"); return 2; }
+          +    module_t *m = &g_mod[g_nmod++]; strcpy(m->name, "main");
+          +    m->size = m->image_size = 0x1DC0000; m->base = calloc(1, m->size);
+          +    if (!m->base) return 2;
+          +    m->data_off = 0x1DAD000; m->patch_off = 0x1DB0000;
+          +    m->key_page_off = 0x1DB0000; m->key_page_size = 0x4000;
+          +    unsetenv("S2A_CAPS_OWN"); unsetenv("DM_PRESENT_INTERVAL"); unsetenv("S2A_FPS_CAP");
+          +    setenv("S2A_FSTEP", "0", 1); setenv("S2A_FPS60", "1", 1); setenv("S2A_FPS_TABLE", argv[1], 1);
+          +    s2a_fps_start(".");
+          +    check("compensated table is a real source without legacy global opt-in", s2a_fps_real_source());
+          +    check("DR factor 200", fabsf(slot(2041) - 200) < 0.001f);
+          +    uint64_t t = 1000000000ull; s2a_fps_present_at(t);
+          +    s2a_fps_present_at(t += 16666667); check("60 FPS -> speed 0.5", fabsf(slot(2040) - 0.5f) < 0.001f);
+          +    s2a_fps_present_at(t += 33333333); check("30 FPS -> speed 1.0", fabsf(slot(2040) - 1.0f) < 0.001f);
+          +    s2a_fps_present_at(t += 50000000); check("20 FPS -> speed 1.5", fabsf(slot(2040) - 1.5f) < 0.001f);
+          +    check("gameplay unlocks interval", s2a_fps_present_at(t += 16666667) == 0);
+          +    plat_guest_store32((uintptr_t)(m->base + m->key_page_off + 2042 * 8), 0);
+          +    check("prerendered cutscene restores original interval", s2a_fps_present_at(t += 16666667) == 1);
+          +    s2a_fps_set_enabled(0);
+          +    check("off speed 1.0", fabsf(slot(2040) - 1.0f) < 0.001f);
+          +    check("off DR factor 100", fabsf(slot(2041) - 100) < 0.001f);
+          +    reset();
+          +    setenv("S2A_FPS60", "0", 1); s2a_fps_start(".");
+          +    check("starts off -> original interval", s2a_fps_present_at(t) == 1);
+          +    check("starts off -> speed 1.0", fabsf(slot(2040) - 1.0f) < 0.001f);
+          +    reset();
+          +    build = "0123456789abcdef0123456789abcdef"; setenv("S2A_FPS60", "1", 1);
+          +    s2a_fps_start("."); check("different build rejected", !s2a_fps_real_source()); reset();
+          +    build = "de0b6ac4efc1dda7f80f6d7598ec7a7d"; setenv("S2A_FPS_TABLE", argv[2], 1);
+          +    m->data_off = 0x1C40000;
+          +    s2a_fps_start("."); check("legacy table stays opted out", !s2a_fps_real_source());
+          +    check("legacy speed stays 1.0", fabsf(slot(2040) - 1.0f) < 0.001f); reset();
+          +    free(m->base);
+          +    printf("compensated FPS: %d/%d PASS\n", checks - fails, checks);
+          +    return fails != 0;
+          +}
           diff --git a/shell/Sources/S2ArmShellBridge/include/s2a_shell.h b/shell/Sources/S2ArmShellBridge/include/s2a_shell.h
           index d4ad1c0d..47f3daee 100644
           --- a/shell/Sources/S2ArmShellBridge/include/s2a_shell.h
@@ -1426,18 +1874,138 @@ jobs:
                                                    .buttonStyle(ShellButtonStyle(fills: true)).accessibilityIdentifier("shellSettings.report")
                                                    .shellTarget("shs.report") { report() }
                                            }
+          diff --git a/tests/fps_botw_190_test.py b/tests/fps_botw_190_test.py
+          new file mode 100644
+          index 00000000..96768768
+          --- /dev/null
+          +++ b/tests/fps_botw_190_test.py
+          @@ -0,0 +1,114 @@
+          +#!/usr/bin/env python3
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Real C rewriter, synthetic NSO only. This does not verify the user's game.
+          +
+          +Addresses follow FPSLocker-Warehouse CD57B23FA4BBAD65 (1.9.0).
+          +Original words are semantic expectations, checked again against the real NSO
+          +when packaging; an incorrect expectation must fail the entire rewrite.
+          +"""
+          +import os
+          +from pathlib import Path
+          +import struct
+          +import subprocess
+          +import sys
+          +import tempfile
+          +import unittest
+          +
+          +CLI = str(Path(sys.argv.pop(1)).resolve())
+          +TABLE = Path(__file__).resolve().parents[1] / 'runtime/fps/cd57b23fa4bbad65.tsv'
+          +ORIGINAL = {
+          +    0xE93DC8: 0x3942F661, 0x151D448: 0x340001A8,
+          +    0x151D46C: 0x1E221862, 0x151D470: 0x1E210841,
+          +    0x1280ED8: 0x1E2C1001, 0x1280EE4: 0x1E210800,
+          +    0x12670A4: 0x52A85908, 0x12670AC: 0x1E270101,
+          +    0xD13910: 0x97FFDE3E, 0xD140D0: 0x97FFDC4E,
+          +}
+          +
+          +
+          +def nso(path, corrupt=False):
+          +    text = bytearray(0x1520000)
+          +    struct.pack_into('<II', text, 0, 0x14000040, len(text))
+          +    struct.pack_into('<I', text, 0x100, 0xD65F03C0)
+          +    for addr, word in ORIGINAL.items():
+          +        struct.pack_into('<II', text, addr, word, 0xD65F03C0)
+          +    # The FMUL at +4 is not replaced by the DR pointer patch.
+          +    struct.pack_into('<I', text, 0x12670A8, 0x1E210803)
+          +    struct.pack_into('<I', text, 0xD0B208, 0xD65F03C0)
+          +    if corrupt:
+          +        struct.pack_into('<I', text, 0x1280ED8, 0xD503201F)
+          +    ro = bytearray(0x1000)
+          +    struct.pack_into('<4sIIIii', ro, 0, b'MOD0', 0, 0, 0, 0x100, 0x120)
+          +    struct.pack_into('<BBBBiIii', ro, 0x100, 1, 0x1B, 3, 0x3B, 0xFC, 1,
+          +                     0x100 - (len(text) + 0x100), 0x118)
+          +    ro[0x200:0x218] = struct.pack('<II', 0x14, 0) + b'\x01zR\0\x04\x78\x1e\x01\x1b' + bytes(7)
+          +    struct.pack_into('<IIii', ro, 0x218, 0x10, 0x1C, 0x100 - (len(text) + 0x220), 4)
+          +    data = bytearray(0x1000)
+          +    h = bytearray(0x100); h[:4] = b'NSO0'; fo = 0x100
+          +    for i, (off, seg) in enumerate(((0, text), (len(text), ro), (0x1DAD000, data))):
+          +        struct.pack_into('<III', h, 0x10 + 0x10 * i, fo, off, len(seg))
+          +        struct.pack_into('<I', h, 0x60 + 4 * i, len(seg)); fo += len(seg)
+          +    h[0x40:0x50] = bytes.fromhex('cd57b23fa4bbad65803d9788c01821ee')
+          +    path.write_bytes(h + text + ro + data)
+          +
+          +
+          +def branch_target(blob, addr):
+          +    word, = struct.unpack_from('<I', blob, addr)
+          +    imm = word & 0x3FFFFFF
+          +    return addr + 4 * (imm - (1 << 26) if imm & (1 << 25) else imm)
+          +
+          +
+          +class BotwRewrite(unittest.TestCase):
+          +    def run_case(self, corrupt=False, table_text=None):
+          +        self.assertTrue(TABLE.is_file(), 'BOTW 1.9.0 compensation table is missing')
+          +        temp = tempfile.TemporaryDirectory(prefix='botw-fps-')
+          +        self.addCleanup(temp.cleanup)
+          +        root = Path(temp.name); inp = root / 'main'; out = root / 'out'; out.mkdir()
+          +        nso(inp, corrupt)
+          +        env = {k: v for k, v in os.environ.items() if not k.startswith('S2A_')}
+          +        selected = TABLE
+          +        if table_text is not None:
+          +            selected = root / 'fps.tsv'; selected.write_text(table_text, encoding='utf-8')
+          +        env.update(S2A_FPS_TSV=str(selected), S2A_TARGET='apple')
+          +        run = subprocess.run([CLI, str(inp), str(out), 'main'], env=env,
+          +                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          +        return run.returncode, run.stdout.decode('utf-8', 'replace'), out
+          +
+          +    def test_compensated_instructions(self):
+          +        rc, log, out = self.run_case()
+          +        self.assertEqual(rc, 0, log)
+          +        blob = (out / 'main.patched.bin').read_bytes()
+          +        def word(addr): return struct.unpack_from('<I', blob, addr)[0]
+          +        self.assertEqual(word(0xE93DC8), 0x52800021)
+          +        self.assertEqual(word(0x151D448), 0x14000003)
+          +        # LDRs read exactly the slot and register selected for each consumer.
+          +        self.assertEqual(word(0x151D470), 0xBD7FC121)
+          +        self.assertEqual(word(0x1280EE4), 0xBD7FC0E0)
+          +        self.assertEqual(word(0x12670AC), 0xBD7FC901)
+          +        self.assertEqual(word(0x12670A8), 0x1E210803)
+          +        for addr, reg in ((0x151D46C, 9), (0x1280ED8, 7), (0x12670A4, 8)):
+          +            self.assertEqual(word(addr) & 0x9F00001F, 0x90000000 | reg)
+          +        for addr in (0xD13910, 0xD140D0):
+          +            self.assertEqual(word(addr) >> 26, 0b100101)
+          +            target = branch_target(blob, addr)
+          +            self.assertEqual(word(target + 4), 0xB93FD201)  # str w1,[x16,#0x3fd0]
+          +            self.assertEqual(branch_target(blob, target + 8), 0xD0B208)
+          +
+          +    def test_wrong_original_rejects_compensated_package(self):
+          +        rc, log, out = self.run_case(corrupt=True)
+          +        self.assertNotEqual(rc, 0, 'must reject a partial/missing speed patch: ' + log)
+          +        self.assertIn('compensated', log)
+          +
+          +    def test_wrong_build_rejected_before_patch(self):
+          +        rc, log, _ = self.run_case(table_text=TABLE.read_text(encoding='utf-8').replace('build cd57b23fa4bbad65', 'build 0123456789abcdef'))
+          +        self.assertEqual(rc, 1, log)
+          +        self.assertIn('compensated', log)
+          +
+          +    def test_invalid_hook_rejected_instead_of_degraded_package(self):
+          +        rc, log, _ = self.run_case(table_text=TABLE.read_text(encoding='utf-8').replace('w1 2042', 'w16 2042'))
+          +        self.assertEqual(rc, 1, log)
+          +        self.assertIn('compensated', log)
+          +
+          +
+          +if __name__ == '__main__':
+          +    unittest.main()
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app_settings.m ios/diag.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings pack/stage_inputs/shell.tsv runtime/tests/mk/diag_upload.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/t_diag_upload.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift
+          git add -- 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings pack/stage_inputs/shell.tsv runtime/fps/cd57b23fa4bbad65.tsv runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/fps_botw_190_test.py
           tree="$(git write-tree)"
-          test "$tree" = "f3f267eaf9302b3c0a78ec8c13787f751e62531d"
+          test "$tree" = "d01db64ce818d566c33fb4fa39bec20a10b53fff"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
           export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
-          export GIT_AUTHOR_DATE='2026-11-15T14:00:00Z' GIT_COMMITTER_DATE='2026-11-15T14:00:00Z'
-          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.0 official render scaling with runtime-only prewarm fix and local diagnostics; upstream dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae')"
+          export GIT_AUTHOR_DATE='2026-11-15T15:30:00Z' GIT_COMMITTER_DATE='2026-11-15T15:30:00Z'
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.0 official render scaling with prewarm, local diagnostics, external pacing and compensated timing; upstream dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae')"
           git checkout -b s2arm-2x-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
           python3 pack/shell/closure.py pyimports
@@ -1473,6 +2041,22 @@ jobs:
           bash services/systemdata/make_tzdata.sh --prepare-sources
           git diff --exit-code
           git diff --cached --exit-code
+
+      - name: Verify slow-display policy and compensated timing
+        working-directory: source
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/s2arm-output/logs"
+          "$S2A_GMAKE" CC=clang native-test-ext_display_policy native-test-ext_display native-test-fps native-test-fps_portable native-test-fps_compensated 2>&1 | tee "$logs/airplay-fps-runtime.log"
+          python3 runtime/rewriter/prepare_deps.py "$RUNNER_TEMP/airplay-rewriter-deps"
+          export S2A_REWRITER_DEPS="$RUNNER_TEMP/airplay-rewriter-deps"
+          export REW="$(python3 pack/rewriter.py c-path)"
+          test -x "$REW"
+          python3 tests/fps_botw_190_test.py "$REW" 2>&1 | tee "$logs/botw-rewrite.log"
+          bash tests/fps_rewrite_test.sh 2>&1 | tee "$logs/fps-rewrite-regression.log"
+          python3 tests/fps_relocate_test.py 2>&1 | tee "$logs/fps-relocate.log"
+          python3 tests/fps_warehouse_test.py 2>&1 | tee "$logs/fps-warehouse.log"
+          echo 'Portable display policy, real FPS runtime and synthetic rewriter checks PASS. No actual BOTW NSO or AirPlay device was tested. BOTW must be repackaged with this Engine; copying fps.tsv into an old IPA is insufficient.' > "$logs/airplay-fps-status.txt"
 
       - name: Download verified Opus source with mirror and retries
         working-directory: source
@@ -1530,7 +2114,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo 'S2ARM_CI_REVISION=4.0-upstream-scale-prewarm-localdiag1'
+          echo 'S2ARM_CI_REVISION=4.0-prewarm-localdiag-airplay-speed1'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
           "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"
@@ -1604,12 +2188,13 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.4.0 official render scaling + runtime-only prewarm fix2 + local diagnostics export; default 1x"
+            echo "Custom build: S2Arm 0.4.0 official render scaling + prewarm fix2 + local diagnostics + slow-display routing + BOTW timing; default 1x"
             echo "Upstream baseline: dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
             cat "$output/logs/prewarm-status.txt"
             cat "$output/logs/diag-export-status.txt"
+            cat "$output/logs/airplay-fps-status.txt"
             echo "Compatible existing resources can be reused. Rebuild resources with 0.4.0 for the new shader translation speed-up."
             echo "iPhone gameplay and visual quality are not verified by this workflow."
             echo "Source: https://github.com/jhaizhou-ops/S2Arm"
@@ -1625,17 +2210,18 @@ jobs:
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
           cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"
           cp "$output/logs/diag-export-status.txt" "$output/artifact/diag-export-status.txt"
+          cp "$output/logs/airplay-fps-status.txt" "$output/artifact/airplay-fps-status.txt"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
           printf '0.4.0\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt diag-export-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. GPU visuals and export UI remain to be verified on device.' >> "$GITHUB_STEP_SUMMARY"
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
+          echo 'Shell build completed. Download S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. AirPlay fallback, BOTW timing, GPU visuals and export UI remain to be verified on device. BOTW requires repackaging with this matching Engine; existing IPA modules do not gain compensation by replacing Shell alone.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag
+          name: S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0

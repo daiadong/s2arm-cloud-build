@@ -3,12 +3,12 @@
 # Self-contained: the patch and matching-source packaging are included below.
 # GPU eligibility checks unified memory, Metal4 and residency creation.
 # Runtime-only PSO prewarm fix plus local iOS diagnostics export; source / closure checks stay enabled.
-name: S2Arm 0.4.0 Shell 2x PSOFix LocalDiag AirPlaySpeed (macOS)
+name: S2Arm 0.4.0 Host PGO Collect (macOS)
 
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/s2arm-airplay-botw-speed']
+    branches: ['codex/s2arm-040-pgo-collect']
     paths: ['.github/workflows/s2arm-shell.yml']
 
 permissions:
@@ -113,8 +113,75 @@ jobs:
           git show HEAD:graphics/nvn/gfx/nvn/nvn_mtl.m > "$RUNNER_TEMP/nvn_mtl-before-prewarm.m"
           git show HEAD:ios/diag.m > "$RUNNER_TEMP/diag-before-local.m"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
+          diff --git a/docs/superpowers/plans/2026-11-16-pgo-collect.md b/docs/superpowers/plans/2026-11-16-pgo-collect.md
+          new file mode 100644
+          index 00000000..e69c3656
+          --- /dev/null
+          +++ b/docs/superpowers/plans/2026-11-16-pgo-collect.md
+          @@ -0,0 +1,44 @@
+          +# iPhone PGO Collection Implementation Plan
+          +
+          +> **For agentic workers:** Use superpowers:executing-plans inline. User explicitly requested direct execution after choosing runtime-shell collection for Three Houses.
+          +
+          +**Goal:** Deliver a buildable profiling Shell that exports real LLVM CPU execution profiles from an iPhone.
+          +**Architecture:** Instrument only IOS_SRCS, serialize cumulative buffer snapshots, export through LocalDiag, and deduplicate sessions before llvm-profdata merge.
+          +**Tech Stack:** C, Objective-C/Foundation/UIKit, Python, Apple Clang, macOS GitHub Actions.
+          +**Spec:** docs/superpowers/specs/2026-11-16-pgo-collect-design.md
+          +
+          +## Global Constraints
+          +- Base d4e05b441d373b266359c166c02423151f2aee87; installed Windows program and all game data remain unchanged.
+          +- Never claim iPhone collection or speed-up from compilation alone. Keep current fixes and 1X/handheld/texture-purge-off preferences.
+          +- Collection build has a distinct source/Shell identity; no profiling flags supplied only through untracked environment.
+          +- No secret or game uploads; user runs the delivered YAML manually.
+          +
+          +## Review Focus
+          +- Repeated cumulative snapshots must not multiply training counts; duplicate sessions select the highest sequence.
+          +- Failed writes must preserve the prior good snapshot and report failure.
+          +- iOS suspension/force quit must not depend on atexit; periodic/foreground/background/export hooks must be reachable.
+          +- Instrumentation must be linked into the main executable, not accidentally omitted or added to independent frameworks.
+          +- Mixed build/LLVM versions and untrusted ZIP paths must be rejected before merging profiles.
+          +
+          +### Task 1: Snapshot, export and merge
+          +
+          +**Files:** runtime/include/pgo_snapshot.h; ios/pgo.m; ios/pgo.h; ios/app.m; ios/diag.m; runtime/build.mk; tools/pgo_merge.py; tests/pgo_collect_test.py; runtime/tests/t_pgo_snapshot.c.
+          +**Interfaces:** s2a_pgo_start(void); BOOL s2a_pgo_add_to_diag(NSString *directory, NSMutableArray *files, NSString **error); int s2a_pgo_snapshot(void **data, size_t *size); pgo_merge.collect(inputs) returns validated latest snapshots.
+          +
+          +- [x] Write failing snapshot tests (invalid size, runtime failure, valid data, output initialization) and merge tests (latest session, mixed build, corrupt/unsafe archive, equal revision conflict).
+          +- [x] Run tests and retain failure output before implementation.
+          +- [x] Implement limited LLVM snapshot API, serialized atomic files, lifecycle hooks and diagnostic inclusion; add main executable compile/link flags only.
+          +- [x] Implement checked merge helper and CI real LLVM roundtrip smoke test. Run portable tests and existing diagnostic tests, plus baseline negative control.
+          +- [x] Commit the implementation and observed validation limits.
+          +
+          +### Task 2: Reproducible CI delivery
+          +
+          +**Files:** work/s2arm-v040-pgo/Build/s2arm-shell.yml (outside source); deliver E:/project/s2arm-shell-0.4.0-pgo-collect.yml and E:/project/S2Arm-0.4.0-PGO-Collect/.
+          +**Interfaces:** Consume Task 1 tests and tools; deliver matching source.bundle, Shell manifest, profile smoke status, compiler identity and source provenance.
+          +
+          +- [x] Derive combined patch from official 0.4.0, preserving LocalDiag/PSO/AirPlay tests; add native LLVM roundtrip and iOS section checks.
+          +- [x] Validate actionlint, embedded Bash/Python, patch replay, source bundle, Shell identity and input closure. Record that CI/device execution remains pending.
+          +- [x] Independent final code review; address material findings once and re-run affected checks.
+          +- [x] Deliver editable YAML and collection instructions with exact artifact name, phone export path, sampling route and limitations.
+          +
+          +Validation boundary: local delivery checks complete; actual macOS build, iPhone collection and performance remain pending. Source branch retained for the user-managed CI workflow; no merge or push.
+          diff --git a/docs/superpowers/specs/2026-11-16-pgo-collect-design.md b/docs/superpowers/specs/2026-11-16-pgo-collect-design.md
+          new file mode 100644
+          index 00000000..6682b574
+          --- /dev/null
+          +++ b/docs/superpowers/specs/2026-11-16-pgo-collect-design.md
+          @@ -0,0 +1,11 @@
+          +# iPhone 运行壳 PGO 采集版
+          +
+          +用户已确认：先采集风花雪月，按建议直接做。沿用当前 0.4.0 LocalDiag / AirPlaySpeed 源码；主程序的 C/Objective-C CPU 路径增加 LLVM 计数，不改游戏 kit、MOD、资源或当前安装目录。
+          +
+          +选择：编译插桩运行壳，iPhone 实际游玩后将原始 LLVM profile 随本地诊断 ZIP 导出。游戏 ARM64 指令重写、C# NativeAOT、GPU shader、Swift UI 和独立第三方静态库不在本次插桩范围内。采集包有额外开销，性能收益只能在后续 profile-use 包与相同基线对照测量。
+          +
+          +每次进程启动建立新 session；每分钟、进入后台及导出诊断前保存累计快照，同一 session 先写新序号的 raw，再原子提交 JSON 指针，避免重复追加累计计数。原始文件保存在 Documents/PGO/<session>/host-<序号>.profraw（诊断包内统一名为 host.profraw）；配套 JSON 记录源码、Shell、编译器和快照序号。诊断 ZIP 带最近最多 8 个 session，含当前快照。合并工具对同一 session 只取最新快照，拒绝不同源码或编译器混合。
+          +
+          +不依赖正常退出或额外权限。手动使用 LLVM buffer API，禁用默认静态初始化与 atexit 写入，避免 LiveContainer 沙盒下写错目录。CPU 计数使用 atomic 更新；导出与定时快照串行。每份 profile 限制 32 MiB，超限或写入失败明确记录并使此次 PGO 诊断导出报错，不伪装采集成功。
+          +
+          +交付自包含 macOS Actions YAML、合并工具和中文采集说明；用户手动运行 CI，下载匹配 Shell 后再组装独立 IPA。保留 1X 掌机、原比例和 S2A_BG_PURGE=0；不修改当前游戏设置。Windows 验证 C 快照错误分支、合并规则、源码接线与 YAML；CI 必须验证真实 LLVM profile 生成、读取和 profile-use 编译，以及 iOS 产物的 profile sections。iPhone 采集和分享面板等待真机验证。
           diff --git "a/docs/\345\235\221\350\256\260\345\275\225.md" "b/docs/\345\235\221\350\256\260\345\275\225.md"
-          index 1d14d3f1..234f92ef 100644
+          index 1d14d3f1..45c20b07 100644
           --- "a/docs/\345\235\221\350\256\260\345\275\225.md"
           +++ "b/docs/\345\235\221\350\256\260\345\275\225.md"
           @@ -2,6 +2,22 @@
@@ -140,7 +207,7 @@ jobs:
            ## 11-14 池表拔钉后晚到的退役请求把本次提交还指着的贴图移出常驻集合（t_nvn_pool_tex ⑩ 偶发红）
            
            **现象**：`t_nvn_pool_tex` 第 ⑩ 项偶发红：取表把第 91 项换成占位后，旧贴图 X 已不在常驻集合（期望在，本次提交还没做完）。单跑很少红，整份门禁并发时约 1/30–1/16。真机上同一路径就是 GPU 读非常驻内存。
-          @@ -5213,3 +5229,11 @@ Adreno 650 / Android 17 原创 NDK 探针，同样 8 状态各 4096 像素均符
+          @@ -5213,3 +5229,17 @@ Adreno 650 / Android 17 原创 NDK 探针，同样 8 状态各 4096 像素均符
            **现象**：v0.4.0 候选 Mac 出包（带补丁）完成页金色横幅整块是方括号键名：[export.export.boost.title]、[export.export.boost.cheats] …；下面「补丁打入结果」正常。
            **根因**：ExportSessionView 调 BoostBanner 时把 x 传进去当取文案函数，x 会再加一次「export.」前缀，横幅里的键本来就是 export.boost.*；单测 BoostBannerTests 直接喂字典，测不到调用处。
            **做法**：调用处改传不加前缀的 BackendText.launcherText。
@@ -152,6 +219,12 @@ jobs:
           +**读数**：Windows GCC 8.1，以 `-std=c11 -Werror=implicit-function-declaration -fsyntax-only` 检查同一完整源文件，修前退出 1，唯一该类错误为 `tolower`；只补 `<ctype.h>` 后退出 0，CMake 的 `s2a-rewrite` 目标重新构建成功。保留原有 Windows 编译警告；此检查不代表 macOS Shell 已编译通过或游戏真机验证通过。
           +
           +**做法**：在使用处显式包含标准头，不依赖宽松编译器放行；重新生成内嵌补丁、源码树指纹与 Windows 改写器，要求使用新工作流提交重新运行构建。
+          +
+          +## PGO 合并输出与来源清单不能共用文件名（2026-11-16）
+          +- 现象：合并工具指定 `--output result.json` 时，profile 产物被来源 JSON 覆盖。
+          +- 根因：`with_suffix(".json")` 会把 profile 输出与来源清单解析为同一目标。
+          +- 实验：Windows / Python 3.14，真实临时目录、LLVM 命令边界替身；期望二进制保持不变 → 旧实现 1 个断言失败，修复后 8 组合并测试通过。这个测试不验证 LLVM 数据格式或手机运行。
+          +- 做法：来源清单追加 `.json`，例如 `S2Arm-host.profdata.json`；两个目标始终不同。真实 LLVM raw/merge/profile-use 由 macOS CI 另行核对。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
           index d16ca3e5..1c7098e6 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
@@ -427,6 +500,26 @@ jobs:
           +
           +if __name__ == "__main__":
           +    raise SystemExit(main())
+          diff --git a/ios/app.m b/ios/app.m
+          index b6b30f3f..72eb48c9 100644
+          --- a/ios/app.m
+          +++ b/ios/app.m
+          @@ -12,6 +12,7 @@
+           #import "app_settings.h"
+           #import "play_layout.h"
+           #import "notice.h"
+          +#import "pgo.h"
+           #include "s2a_session.h"
+           #include "s2a_dguard.h"
+           #include "s2a_init_fail.h"   // 初启失败页的标题 / 按钮文案（与 launchers/shared/experience.v1.json init_fail_page 逐字一致；中英按 App 语言取，S2APICK）
+          @@ -651,6 +652,7 @@ static void audio_category_apply(void) {
+               });
+           }
+           - (BOOL)application:(UIApplication *)app didFinishLaunchingWithOptions:(NSDictionary *)opts {
+          +    s2a_pgo_start();
+               display_focus_publish(app.applicationState == UIApplicationStateActive);
+               free_note();
+               if (!s2a_host_boot_deferred()) [self startMonitoring];
           diff --git a/ios/app_settings.m b/ios/app_settings.m
           index 181cf829..a543fad5 100644
           --- a/ios/app_settings.m
@@ -441,10 +534,10 @@ jobs:
            @end
            static S2ASettingsRuntime *g_runtime;
           diff --git a/ios/diag.m b/ios/diag.m
-          index d9d0b1bc..974a8df1 100644
+          index d9d0b1bc..3d4d294c 100644
           --- a/ios/diag.m
           +++ b/ios/diag.m
-          @@ -1,20 +1,19 @@
+          @@ -1,22 +1,22 @@
            // 导出诊断包（用户体验线 10-23，明天内测用；包格式由测试出包线定，schema 1）：
            //   入口：① 系统「设置 → 本 App」里的开关「打开 App 时导出诊断包」（App 打开 / 回前台时看到开着就导出，并把开关关回去）；
            //         ② 游戏画面上四指长按 1.5 秒 → 菜单「导出诊断包」；③ 没进游戏的提示页（缺资源 / 导入失败）上的按钮；
@@ -467,8 +560,11 @@ jobs:
           -#import <CoreTelephony/CTCellularData.h>   // 上传断网时认「无线数据」授权被拒（国行 iPhone）
            #import "vpad.h"
            #import "app_settings.h"
+          +#import "pgo.h"
            #include <sys/sysctl.h>
-          @@ -25,7 +24,6 @@ NSUserDefaults *s2a_ios_settings_defaults(void);   // settings.m：诊断局开
+           #include "native.h"
+           #include "diagredact.h"
+          @@ -25,7 +25,6 @@ NSUserDefaults *s2a_ios_settings_defaults(void);   // settings.m：诊断局开
            #include "s2a_pad.h"   // s2a_pad_plus_press：手柄长按「+」开菜单
            #include "s2a_launch_ctx.h"
            #include "s2a_sesdiag.h"
@@ -476,7 +572,7 @@ jobs:
            
            static NSString *docs(void) { return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject; }
            // 资源包根：启动上下文给了本款资源包就读它（上下文文件 / 多款容器选了游戏：v0.3.0 起在 Library 下，s2a_docs.h s2a_pack_root）；
-          @@ -55,9 +53,7 @@ static NSArray<NSString *> *archived_logs(void) {
+          @@ -55,9 +54,7 @@ static NSArray<NSString *> *archived_logs(void) {
            static NSString *const kOpenToggle = @"S2ADiagExportOnOpen";   // Settings.bundle 里的开关
            static UIViewController *g_vc;
            static BOOL g_prompted, g_exporting;
@@ -487,7 +583,15 @@ jobs:
            
            // ---------- 单次会话日志的摘要（manifest.sessions 一项；只在导出诊断包的后台线程算）----------
            // 11-07 起只读头 1 MB + 尾 3 MB、按字节找（runtime/src/sesdiag.c s2a_log_summary）：原先整份读成 NSString 逐行折叠查找，挂死后刷满红行的上一局日志在主线程上卡几秒（测试设备2 看门狗复位）
-          @@ -292,7 +288,7 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
+          @@ -190,6 +187,7 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
+               [fm removeItemAtPath:W error:nil];
+               [fm createDirectoryAtPath:[W stringByAppendingPathComponent:@"logs"] withIntermediateDirectories:YES attributes:nil error:nil];
+               NSMutableArray *files = [NSMutableArray array], *sessions = [NSMutableArray array];
+          +    if (!s2a_pgo_add_to_diag(W, files, err)) { [fm removeItemAtPath:W error:nil]; return nil; }
+               __block BOOL copyFailed = NO;
+               void (^add)(NSString *, NSString *, NSUInteger) = ^(NSString *src, NSString *rel, NSUInteger c) {
+                   NSDictionary *r = copy_text(src, [W stringByAppendingPathComponent:rel], c);
+          @@ -292,7 +290,7 @@ static NSURL *build_zip(NSUInteger cap, BOOL slim, NSString **err) {
                NSDictionary *manifest = @{
                    @"schema": @1, @"exported_at": [iso stringFromDate:NSDate.date],
                    @"tester": @{@"id": tester_id(), @"group": @"", @"note": @""},
@@ -496,7 +600,7 @@ jobs:
                    @"app": @{@"bundle": bundle, @"version": [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"", @"commit": commit,
                              // 包号：单款包 S2ABuildID；多款容器的壳没有按款包号，记壳号 S2AShellId（同 s2a_catalogue.json shell_id）
                              @"build_id": [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2ABuildID"] ?: [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2AShellId"] ?: @"",
-          @@ -356,7 +352,7 @@ static UIViewController *top_of(UIViewController *host) {
+          @@ -356,7 +354,7 @@ static UIViewController *top_of(UIViewController *host) {
                if ([top isKindOfClass:UINavigationController.class]) top = ((UINavigationController *)top).topViewController;
                return top;
            }
@@ -505,7 +609,7 @@ jobs:
            static void present_over(UIViewController *host, UIViewController *vc) {
                void (^show)(void) = ^{ UIViewController *top = host; while (top.presentedViewController) top = top.presentedViewController; [top presentViewController:vc animated:YES completion:nil]; };
                UIAlertController *q = g_promptAlert;
-          @@ -372,7 +368,7 @@ static void share_zip(UIViewController *host, NSURL *zip) {
+          @@ -372,7 +370,7 @@ static void share_zip(UIViewController *host, NSURL *zip) {
                av.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(host.view.bounds), CGRectGetMidY(host.view.bounds), 1, 1);
                present_over(host, av);
            }
@@ -514,7 +618,7 @@ jobs:
            void s2a_diag_export(void) {
                UIViewController *host = diag_host();
                if (g_exporting || !host) return;
-          @@ -380,126 +376,10 @@ void s2a_diag_export(void) {
+          @@ -380,126 +378,10 @@ void s2a_diag_export(void) {
                build_async(^(NSURL *zip, NSString *err) { busy_done(); if (!zip) build_failed(host, err); else share_zip(host, zip); });
            }
            
@@ -645,7 +749,7 @@ jobs:
            void s2a_report_gear_attach(UIView *page) {
                if (!page) return;
                UIButton *g = [UIButton buttonWithType:UIButtonTypeSystem]; g.accessibilityIdentifier = @"page.gear"; g.accessibilityLabel = S2AL(@"diag.report.title");
-          @@ -576,18 +456,18 @@ static void crash_off_notice_only(void) {
+          @@ -576,18 +458,18 @@ static void crash_off_notice_only(void) {
                if (!g_crash_off) return;
                s2a_dprompt_notice(S2AL(@"crash.off.title"), [NSString stringWithFormat:S2AL(@"crash.off.body"), g_crash_off], 0, 8); g_crash_off = nil;
            }
@@ -667,7 +771,7 @@ jobs:
                UIViewController *top = g_vc; while (top.presentedViewController) top = top.presentedViewController;
                g_promptAlert = a; [top presentViewController:a animated:YES completion:nil];
            }
-          @@ -597,8 +477,8 @@ static void check_toggle(void) {
+          @@ -597,8 +479,8 @@ static void check_toggle(void) {
                NSUserDefaults *u = NSUserDefaults.standardUserDefaults;
                static BOOL env_done;   // 真机验证用：devicectl 起局带 S2A_DIAG_EXPORT_NOW=1 → 启动就导出一次（包落 Documents/diag/，执行器拉回核对），不用人点
                if (!env_done) { env_done = YES; const char *e = getenv("S2A_DIAG_EXPORT_NOW"); if (e && *e == '1') { s2a_diag_export(); return; }
@@ -954,6 +1058,169 @@ jobs:
            "crash.off.title" = "已關掉上次出問題的設定";
            "sgrade.title" = "S 級優化";
            "sgrade.note" = "開著補丁如遇到不相容導致遊戲當機，下次啟動會自動將當機補丁關掉以確保您正常遊戲。";
+          diff --git a/ios/pgo.h b/ios/pgo.h
+          new file mode 100644
+          index 00000000..f5b8bfae
+          --- /dev/null
+          +++ b/ios/pgo.h
+          @@ -0,0 +1,3 @@
+          +#import <Foundation/Foundation.h>
+          +void s2a_pgo_start(void);
+          +BOOL s2a_pgo_add_to_diag(NSString *directory, NSMutableArray *files, NSString **error);
+          diff --git a/ios/pgo.m b/ios/pgo.m
+          new file mode 100644
+          index 00000000..885ea172
+          --- /dev/null
+          +++ b/ios/pgo.m
+          @@ -0,0 +1,148 @@
+          +// Collection-only host instrumentation. Normal Shells compile these hooks as no-ops.
+          +#import "pgo.h"
+          +#if S2A_PGO_COLLECT
+          +#import <UIKit/UIKit.h>
+          +#import <CommonCrypto/CommonDigest.h>
+          +#include "pgo_snapshot.h"
+          +#include <stdio.h>
+          +// Disables compiler-rt's default initializer/atexit writer (unreliable on iOS).
+          +int __llvm_profile_runtime;
+          +uint64_t __llvm_profile_get_version(void);
+          +static dispatch_queue_t queue;
+          +static dispatch_source_t timer;
+          +static NSString *root, *session, *sessionDir;
+          +static NSUInteger sequence;
+          +
+          +static NSString *digest(NSData *data) {
+          +    unsigned char hash[CC_SHA256_DIGEST_LENGTH];
+          +    CC_SHA256(data.bytes, (CC_LONG)data.length, hash);
+          +    NSMutableString *s = [NSMutableString string];
+          +    for (NSUInteger i = 0; i < sizeof hash; ++i) [s appendFormat:@"%02x", hash[i]];
+          +    return s;
+          +}
+          +static BOOL save(NSString **error) {
+          +    void *buffer = NULL; size_t size = 0;
+          +    int rc = s2a_pgo_snapshot(&buffer, &size);
+          +    if (rc) { if (error) *error = [NSString stringWithFormat:@"PGO snapshot failed (%d)", rc]; return NO; }
+          +    NSData *raw = [NSData dataWithBytesNoCopy:buffer length:size freeWhenDone:YES];
+          +    NSFileManager *fm = NSFileManager.defaultManager;
+          +    NSError *e = nil;
+          +    if (![fm createDirectoryAtPath:sessionDir withIntermediateDirectories:YES attributes:nil error:&e]) {
+          +        if (error) *error = e.localizedDescription; return NO;
+          +    }
+          +    // Never overwrite the raw file referenced by the committed manifest.
+          +    NSUInteger next = sequence + 1;
+          +    NSString *leaf = [NSString stringWithFormat:@"host-%lu.profraw", (unsigned long)next];
+          +    NSString *path = [sessionDir stringByAppendingPathComponent:leaf];
+          +    NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2ACommit"] ?: @"unknown";
+          +    NSString *shell = [NSBundle.mainBundle objectForInfoDictionaryKey:@"S2AShellId"] ?: @"unknown";
+          +    NSDictionary *meta = @{
+          +        @"schema": @1, @"session_id": session, @"sequence": @(next), @"raw_file": leaf,
+          +        @"source": commit, @"shell_id": shell, @"compiler": @(__clang_version__),
+          +        @"profile_version": [NSString stringWithFormat:@"%llu", (unsigned long long)__llvm_profile_get_version()],
+          +        @"bytes": @(size), @"sha256": digest(raw), @"saved_at": @([NSDate.date timeIntervalSince1970]),
+          +        @"scope": @"IOS_SRCS frontend instrumentation; no value profiling; no game/GPU/Swift/AOT instrumentation"
+          +    };
+          +    NSData *json = [NSJSONSerialization dataWithJSONObject:meta options:NSJSONWritingPrettyPrinted error:&e];
+          +    if (!json || ![raw writeToFile:path options:NSDataWritingAtomic error:&e] ||
+          +        ![json writeToFile:[sessionDir stringByAppendingPathComponent:@"session.json"] options:NSDataWritingAtomic error:&e]) {
+          +        [fm removeItemAtPath:path error:nil];
+          +        if (error) *error = e.localizedDescription ?: @"PGO save failed";
+          +        return NO;
+          +    }
+          +    sequence = next;
+          +    for (NSString *old in [fm contentsOfDirectoryAtPath:sessionDir error:nil])
+          +        if ([old hasPrefix:@"host-"] && [old hasSuffix:@".profraw"] && ![old isEqualToString:leaf])
+          +            [fm removeItemAtPath:[sessionDir stringByAppendingPathComponent:old] error:nil];
+          +    fprintf(stderr, "[PGO] saved session=%s sequence=%lu bytes=%zu\n",
+          +            session.UTF8String, (unsigned long)sequence, size);
+          +    return YES;
+          +}
+          +static void save_logged(void) {
+          +    @autoreleasepool {
+          +        NSString *error = nil;
+          +        if (!save(&error)) fprintf(stderr, "[PGO] save failed: %s\n", error.UTF8String);
+          +    }
+          +}
+          +void s2a_pgo_start(void) {
+          +    static dispatch_once_t once;
+          +    dispatch_once(&once, ^{
+          +        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+          +        root = [docs stringByAppendingPathComponent:@"PGO"];
+          +        session = NSUUID.UUID.UUIDString.lowercaseString;
+          +        sessionDir = [root stringByAppendingPathComponent:session];
+          +        queue = dispatch_queue_create("org.s2arm.pgo", DISPATCH_QUEUE_SERIAL);
+          +        timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+          +        dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), 60 * NSEC_PER_SEC, NSEC_PER_SEC);
+          +        dispatch_source_set_event_handler(timer, ^{ save_logged(); });
+          +        dispatch_resume(timer);
+          +        // Synchronous background snapshot finishes before returning to UIKit's suspend path.
+          +        [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidEnterBackgroundNotification
+          +            object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+          +                (void)n; dispatch_sync(queue, ^{ save_logged(); });
+          +            }];
+          +        dispatch_async(queue, ^{ save_logged(); });
+          +    });
+          +}
+          +BOOL s2a_pgo_add_to_diag(NSString *directory, NSMutableArray *files, NSString **error) {
+          +    s2a_pgo_start();
+          +    __block BOOL ok = YES;
+          +    __block NSString *problem = nil;
+          +    dispatch_sync(queue, ^{
+          +        @autoreleasepool {
+          +            if (!save(&problem)) { ok = NO; return; }
+          +            NSFileManager *fm = NSFileManager.defaultManager;
+          +            NSMutableArray *records = [NSMutableArray array];
+          +            for (NSString *sid in [fm contentsOfDirectoryAtPath:root error:nil]) {
+          +                if (![[NSUUID alloc] initWithUUIDString:sid]) continue;
+          +                NSString *dir = [root stringByAppendingPathComponent:sid];
+          +                NSData *json = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:@"session.json"]];
+          +                id m = json ? [NSJSONSerialization JSONObjectWithData:json options:0 error:nil] : nil;
+          +                if ([m isKindOfClass:NSDictionary.class] && [m[@"session_id"] isEqual:sid])
+          +                    [records addObject:m];
+          +            }
+          +            [records sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+          +                // Current session first even if the wall clock moved backwards.
+          +                if ([a[@"session_id"] isEqual:session]) return NSOrderedAscending;
+          +                if ([b[@"session_id"] isEqual:session]) return NSOrderedDescending;
+          +                return [b[@"saved_at"] compare:a[@"saved_at"]];
+          +            }];
+          +            NSUInteger count = 0;
+          +            for (NSDictionary *m in records) {
+          +                if (count++ >= 8) break;
+          +                NSString *sid = m[@"session_id"], *leaf = m[@"raw_file"];
+          +                if (![leaf isKindOfClass:NSString.class] || ![leaf isEqual:leaf.lastPathComponent] ||
+          +                    ![leaf hasSuffix:@".profraw"]) { ok = NO; problem = @"Invalid PGO profile path"; break; }
+          +                NSString *src = [[root stringByAppendingPathComponent:sid] stringByAppendingPathComponent:leaf];
+          +                NSNumber *length = [fm attributesOfItemAtPath:src error:nil][NSFileSize];
+          +                if (!length || length.unsignedLongLongValue > S2A_PGO_MAX_BYTES) {
+          +                    ok = NO; problem = @"Missing or oversized PGO profile"; break;
+          +                }
+          +                NSData *raw = [NSData dataWithContentsOfFile:src];
+          +                if (!raw || raw.length != [m[@"bytes"] unsignedLongLongValue] || ![digest(raw) isEqual:m[@"sha256"]]) {
+          +                    ok = NO; problem = @"PGO profile checksum mismatch"; break;
+          +                }
+          +                NSString *rel = [@"pgo" stringByAppendingPathComponent:sid];
+          +                NSString *dest = [directory stringByAppendingPathComponent:rel];
+          +                NSError *e = nil;
+          +                NSMutableDictionary *exportMeta = [m mutableCopy]; exportMeta[@"raw_file"] = @"host.profraw";
+          +                NSData *json = [NSJSONSerialization dataWithJSONObject:exportMeta options:NSJSONWritingPrettyPrinted error:&e];
+          +                if (!json || ![fm createDirectoryAtPath:dest withIntermediateDirectories:YES attributes:nil error:&e] ||
+          +                    ![raw writeToFile:[dest stringByAppendingPathComponent:@"host.profraw"] options:NSDataWritingAtomic error:&e] ||
+          +                    ![json writeToFile:[dest stringByAppendingPathComponent:@"session.json"] options:NSDataWritingAtomic error:&e]) {
+          +                    ok = NO; problem = e.localizedDescription ?: @"PGO export failed"; break;
+          +                }
+          +                [files addObject:@{@"path":[rel stringByAppendingPathComponent:@"host.profraw"], @"bytes":@(raw.length), @"truncated":@NO}];
+          +                [files addObject:@{@"path":[rel stringByAppendingPathComponent:@"session.json"], @"bytes":@(json.length), @"truncated":@NO}];
+          +            }
+          +        }
+          +    });
+          +    if (!ok && error) *error = problem;
+          +    return ok;
+          +}
+          +#else
+          +void s2a_pgo_start(void) {}
+          +BOOL s2a_pgo_add_to_diag(NSString *directory, NSMutableArray *files, NSString **error) {
+          +    (void)directory; (void)files; (void)error; return YES;
+          +}
+          +#endif
           diff --git a/pack/stage_inputs/shell.tsv b/pack/stage_inputs/shell.tsv
           index f511eb4e..f0b5b783 100644
           --- a/pack/stage_inputs/shell.tsv
@@ -1225,6 +1492,31 @@ jobs:
           +入	tests
           +入	tools
           +入	translator
+          diff --git a/runtime/build.mk b/runtime/build.mk
+          index 192dc077..27be918e 100644
+          --- a/runtime/build.mk
+          +++ b/runtime/build.mk
+          @@ -166,6 +166,9 @@ ios-ns2pro:
+           	@mv -f $(NS2_FRAMEWORK)/Info.plist.tmp $(NS2_FRAMEWORK)/Info.plist
+           	@cp runtime/ns2pro/LICENSE $(NS2_FRAMEWORK)/LICENSE
+           ns2pro-test: native-test-ns2pro
+          +# Source-pinned collection build: these flags are part of the Shell identity.
+          +# Only the main IOS_SRCS objects are instrumented, not NS2Pro/Swift/AOT/GPU libraries.
+          +IOS_HOST_PGO_FLAGS := -fprofile-instr-generate -fprofile-update=atomic -DS2A_PGO_COLLECT=1
+           ios: ios-ns2pro
+           	@[ -z "$(IOS_MODS)" ] || { echo "🔴 make ios 只出与游戏无关的壳（11-04 全外置）：不再收 IOS_MODS；按款组装用 pack/ship_ext.py build"; exit 1; }
+           	@rm -rf $(IOS_APP) && mkdir -p $(IOS_APP) $(BUILD)/ios
+          @@ -173,8 +176,8 @@ ios: ios-ns2pro
+           	@cp -R ios/Settings.bundle $(IOS_APP)/Settings.bundle
+           	@cp -R ios/l10n/*.lproj $(IOS_APP)/   # 宿主界面字符串表（ios/s2a_l10n.h S2AL）：<语言>.lproj/S2ArmHost.strings 放主 bundle；同目录 InfoPlist.strings 是权限说明的译文（#316）
+           	@for l in zh-Hans zh-Hant en; do python3 launchers/shared/experience_strings.py --lang $$l > $(BUILD)/ios/error_$$l.strings || { echo "🔴 装机 / 导入失败文案生成失败（launchers/shared/experience_strings.py --lang $$l）"; exit 1; }; cat $(BUILD)/ios/error_$$l.strings >> $(IOS_APP)/$$l.lproj/S2ArmHost.strings; done   # 失败按码说人话（app.m install_error_text）：码表单一来源 experience.v1.json，生成的键只进包、不进仓库表
+          -	@$(call ios_objs_cached,$(BUILD)/ios/obj_app,-fobjc-arc $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include,$(IOS_SRCS))
+          -	$(IOS_LD_REPRO) $(IOS_CC) -fobjc-arc $(IOS_LD_DET) -Wl,-oso_prefix,$(IOS_BUILD_ABS)/ -o $(IOS_APP)/S2Arm $(call ios_objlist,$(BUILD)/ios/obj_app,$(IOS_SRCS)) $(IOS_LIBS) \
+          +	@$(call ios_objs_cached,$(BUILD)/ios/obj_app,-fobjc-arc $(IOS_HOST_PGO_FLAGS) $(NATIVE_INC) -Iruntime/src -Iruntime/ns2pro/include,$(IOS_SRCS))
+          +	$(IOS_LD_REPRO) $(IOS_CC) -fobjc-arc -fprofile-instr-generate $(IOS_LD_DET) -Wl,-oso_prefix,$(IOS_BUILD_ABS)/ -o $(IOS_APP)/S2Arm $(call ios_objlist,$(BUILD)/ios/obj_app,$(IOS_SRCS)) $(IOS_LIBS) \
+           	  -framework UIKit -framework Foundation -framework CoreGraphics $(IOS_SHELLUI_LINK) $(call S2A_WEAK_U,ios) -Wl,-S
+           	@rm -rf $(BUILD)/ios/S2Arm.dSYM $(IOS_APP)/S2Arm.dSYM   # 主程序链接带 -Wl,-S（不留调试映射），没有调试符号包可出；函数符号表照留，atos / 宿主 dladdr 照常符号化
+           	@[ "$(S2A_SHELLUI)" != 1 ] || cp -R $(SHELLUI_PRODUCTS)/S2ArmShellUI_ShellUI.bundle $(IOS_APP)/   # 游戏库界面资源包（本地化 + 字体）
           diff --git a/runtime/fps/cd57b23fa4bbad65.tsv b/runtime/fps/cd57b23fa4bbad65.tsv
           new file mode 100644
           index 00000000..b4a447d2
@@ -1253,6 +1545,32 @@ jobs:
           +speed 2040 0.5 2.0
           +present30 if slot 2042 == 0
           +w main 0x1dad0e0 f32 0.5 off 1
+          diff --git a/runtime/include/pgo_snapshot.h b/runtime/include/pgo_snapshot.h
+          new file mode 100644
+          index 00000000..0068b763
+          --- /dev/null
+          +++ b/runtime/include/pgo_snapshot.h
+          @@ -0,0 +1,20 @@
+          +#ifndef S2A_PGO_SNAPSHOT_H
+          +#define S2A_PGO_SNAPSHOT_H
+          +#include <stdint.h>
+          +#include <stdlib.h>
+          +#define S2A_PGO_MAX_BYTES (32u * 1024u * 1024u)
+          +uint64_t __llvm_profile_get_size_for_buffer(void);
+          +int __llvm_profile_write_buffer(char *);
+          +/* A cumulative snapshot; never append it to a prior snapshot or reset live counters. */
+          +static inline int s2a_pgo_snapshot(void **data, size_t *size) {
+          +    if (data) *data = NULL;
+          +    if (size) *size = 0;
+          +    if (!data || !size) return -1;
+          +    uint64_t n = __llvm_profile_get_size_for_buffer();
+          +    if (!n || n > S2A_PGO_MAX_BYTES) return -2;
+          +    void *p = malloc((size_t)n);
+          +    if (!p) return -3;
+          +    if (__llvm_profile_write_buffer(p)) { free(p); return -4; }
+          +    *data = p; *size = (size_t)n; return 0;
+          +}
+          +#endif
           diff --git a/runtime/rewriter/rewriter.c b/runtime/rewriter/rewriter.c
           index 276e0798..19858ed7 100644
           --- a/runtime/rewriter/rewriter.c
@@ -1450,6 +1768,19 @@ jobs:
           +	  $(BUILD)/tests/t_nvn_warm_runtime read "$$tmp"
           +TEST_TARGETS += native-test-nvn_warm_runtime
           +endif
+          diff --git a/runtime/tests/mk/pgo_snapshot.mk b/runtime/tests/mk/pgo_snapshot.mk
+          new file mode 100644
+          index 00000000..5b8164bb
+          --- /dev/null
+          +++ b/runtime/tests/mk/pgo_snapshot.mk
+          @@ -0,0 +1,7 @@
+          +NATIVE_TEST_OWN += pgo_snapshot
+          +.PHONY: native-test-pgo_snapshot
+          +native-test-pgo_snapshot:
+          +	@mkdir -p $(BUILD)/tests
+          +	$(CC) $(CFLAGS) $(NATIVE_INC) -o $(BUILD)/tests/t_pgo_snapshot runtime/tests/t_pgo_snapshot.c
+          +	$(BUILD)/tests/t_pgo_snapshot
+          +TEST_TARGETS += native-test-pgo_snapshot
           diff --git a/runtime/tests/t_diag_upload.c b/runtime/tests/t_diag_upload.c
           index 17b74512..0411e61f 100644
           --- a/runtime/tests/t_diag_upload.c
@@ -1589,6 +1920,41 @@ jobs:
           +    free(m->base);
           +    printf("compensated FPS: %d/%d PASS\n", checks - fails, checks);
           +    return fails != 0;
+          +}
+          diff --git a/runtime/tests/t_pgo_snapshot.c b/runtime/tests/t_pgo_snapshot.c
+          new file mode 100644
+          index 00000000..625f413f
+          --- /dev/null
+          +++ b/runtime/tests/t_pgo_snapshot.c
+          @@ -0,0 +1,29 @@
+          +#include <assert.h>
+          +#include <stdint.h>
+          +#include <string.h>
+          +#include <stdio.h>
+          +#include "pgo_snapshot.h"
+          +static uint64_t test_size = 4;
+          +static int test_failure, writes;
+          +uint64_t __llvm_profile_get_size_for_buffer(void) { return test_size; }
+          +int __llvm_profile_write_buffer(char *p) {
+          +    writes++;
+          +    if (test_failure) return -1;
+          +    memcpy(p, "PGO!", 4); return 0;
+          +}
+          +int main(void) {
+          +    void *data = (void *)1; size_t size = 123;
+          +    assert(s2a_pgo_snapshot(NULL, &size) != 0 && size == 0);
+          +    assert(s2a_pgo_snapshot(&data, NULL) != 0 && data == NULL);
+          +    test_size = 0; data = (void *)1; size = 123;
+          +    assert(s2a_pgo_snapshot(&data, &size) != 0 && !data && !size);
+          +    test_size = S2A_PGO_MAX_BYTES + 1;
+          +    assert(s2a_pgo_snapshot(&data, &size) != 0 && !data && !size && !writes);
+          +    test_size = 4; test_failure = 1;
+          +    assert(s2a_pgo_snapshot(&data, &size) != 0 && !data && !size);
+          +    test_failure = 0;
+          +    assert(!s2a_pgo_snapshot(&data, &size) && size == 4 && !memcmp(data, "PGO!", 4));
+          +    free(data);
+          +    puts("✓ t_pgo_snapshot: outputs, size bounds, runtime failure, valid bytes");
+          +    return 0;
           +}
           diff --git a/shell/Sources/S2ArmShellBridge/include/s2a_shell.h b/shell/Sources/S2ArmShellBridge/include/s2a_shell.h
           index d4ad1c0d..47f3daee 100644
@@ -2014,18 +2380,339 @@ jobs:
           +
           +if __name__ == '__main__':
           +    unittest.main()
+          diff --git a/tests/pgo_collect_test.py b/tests/pgo_collect_test.py
+          new file mode 100644
+          index 00000000..23f8cb28
+          --- /dev/null
+          +++ b/tests/pgo_collect_test.py
+          @@ -0,0 +1,112 @@
+          +#!/usr/bin/env python3
+          +"""Container validation: fake raw bytes here; actual LLVM validation runs on macOS CI."""
+          +import hashlib
+          +import importlib.util
+          +import json
+          +from pathlib import Path
+          +import tempfile
+          +import unittest
+          +from unittest.mock import patch
+          +import zipfile
+          +
+          +ROOT = Path(__file__).resolve().parents[1]
+          +spec = importlib.util.spec_from_file_location("pgo_merge", ROOT / "tools/pgo_merge.py")
+          +pgo = importlib.util.module_from_spec(spec)
+          +spec.loader.exec_module(pgo)
+          +SID = "12345678-1234-1234-1234-123456789abc"
+          +
+          +class Profiles(unittest.TestCase):
+          +    def setUp(self):
+          +        self.tmp = tempfile.TemporaryDirectory()
+          +        self.addCleanup(self.tmp.cleanup)
+          +        self.root = Path(self.tmp.name)
+          +        self.n = 0
+          +
+          +    def archive(self, sequence=1, raw=b"fake raw", **change):
+          +        self.n += 1
+          +        out = self.root / (str(self.n) + ".zip")
+          +        meta = dict(schema=1, session_id=SID, sequence=sequence, raw_file="host.profraw",
+          +                    source="a"*40, shell_id="b"*16, compiler="Apple clang test",
+          +                    profile_version="10", bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+          +        meta.update(change)
+          +        with zipfile.ZipFile(out, "w") as z:
+          +            z.writestr(f"pgo/{SID}/session.json", json.dumps(meta))
+          +            z.writestr(f"pgo/{SID}/host.profraw", raw)
+          +        return out
+          +
+          +    def test_latest_cumulative_snapshot_only(self):
+          +        a, b = self.archive(), self.archive(2, b"new")
+          +        rows = pgo.collect([a, b, b])
+          +        self.assertEqual(len(rows), 1)
+          +        self.assertEqual(rows[0]["raw"], b"new")
+          +        self.assertEqual(rows[0]["metadata"]["sequence"], 2)
+          +
+          +    def test_equal_revision_conflict(self):
+          +        with self.assertRaises(ValueError):
+          +            pgo.collect([self.archive(), self.archive(raw=b"other")])
+          +
+          +    def test_mixed_build_rejected(self):
+          +        for key, value in [("source", "c"*40), ("shell_id", "d"*16),
+          +                           ("compiler", "other clang"), ("profile_version", "11")]:
+          +            with self.subTest(key=key), self.assertRaises(ValueError):
+          +                pgo.collect([self.archive(), self.archive(2, **{key:value})])
+          +
+          +    def test_invalid_metadata(self):
+          +        for change in [dict(sha256="0"*64), dict(bytes=999), dict(sequence=0),
+          +                       dict(sequence=True), dict(session_id="../bad"),
+          +                       dict(raw_file="../../host.profraw"), dict(schema=2),
+          +                       dict(source="unknown")]:
+          +            with self.subTest(change=change), self.assertRaises(ValueError):
+          +                pgo.collect([self.archive(**change)])
+          +
+          +    def test_unsafe_and_duplicate_zip_entries(self):
+          +        for name in ["../escape", "/absolute", "pgo/../escape", "pgo\\escape"]:
+          +            arc = self.archive()
+          +            with zipfile.ZipFile(arc, "a") as z:
+          +                entry = zipfile.ZipInfo(name)
+          +                entry.filename = name  # Preserve malicious spelling; Windows ZipInfo normalizes it otherwise.
+          +                z.writestr(entry, b"x")
+          +            with self.subTest(name=name), self.assertRaises(ValueError):
+          +                pgo.collect([arc])
+          +        arc = self.archive()
+          +        with zipfile.ZipFile(arc, "a") as z:
+          +            z.writestr(f"pgo/{SID}/host.profraw", b"duplicate")
+          +        with self.assertRaises(ValueError):
+          +            pgo.collect([arc])
+          +
+          +    def test_size_limit_and_empty_input(self):
+          +        arc = self.archive(raw=b"x"*12)
+          +        old = pgo.MAX_BYTES
+          +        try:
+          +            pgo.MAX_BYTES = 8
+          +            with self.assertRaises(ValueError):
+          +                pgo.collect([arc])
+          +        finally:
+          +            pgo.MAX_BYTES = old
+          +        with self.assertRaises(ValueError):
+          +            pgo.collect([])
+          +
+          +    def test_missing_raw(self):
+          +        arc = self.root / "missing.zip"
+          +        with zipfile.ZipFile(arc, "w") as z:
+          +            z.writestr("manifest.json", "{}")
+          +        with self.assertRaises(ValueError):
+          +            pgo.collect([arc])
+          +
+          +    def test_output_and_provenance_never_overwrite_each_other(self):
+          +        arc = self.archive()
+          +        def llvm_boundary(argv, **kwargs):
+          +            if "merge" in argv:
+          +                Path(argv[argv.index("-o")+1]).write_bytes(b"LLVM parsed profile fixture")
+          +        for filename in ("result.json", "result.profdata"):
+          +            output = self.root / filename
+          +            with patch("sys.argv", ["pgo_merge.py", str(arc), "--output", str(output)]), \
+          +                 patch.object(pgo.subprocess, "run", side_effect=llvm_boundary), \
+          +                 patch.object(pgo.subprocess, "check_output", return_value="LLVM fixture"):
+          +                pgo.main()
+          +            self.assertEqual(output.read_bytes(), b"LLVM parsed profile fixture")
+          +            sidecar = Path(str(output)+".json")
+          +            self.assertEqual(json.loads(sidecar.read_text())["sessions"][0]["session_id"], SID)
+          +
+          +if __name__ == "__main__":
+          +    unittest.main()
+          diff --git a/tests/pgo_runtime_smoke.py b/tests/pgo_runtime_smoke.py
+          new file mode 100644
+          index 00000000..efaae688
+          --- /dev/null
+          +++ b/tests/pgo_runtime_smoke.py
+          @@ -0,0 +1,76 @@
+          +#!/usr/bin/env python3
+          +"""Real LLVM buffer roundtrip, exact cumulative counts, and profile-use compile (macOS CI)."""
+          +import os
+          +import hashlib
+          +import json
+          +from pathlib import Path
+          +import re
+          +import subprocess
+          +import tempfile
+          +import sys
+          +import zipfile
+          +ROOT = Path(__file__).resolve().parents[1]
+          +
+          +def run(args, **kw):
+          +    return subprocess.check_output(args, text=True, **kw)
+          +
+          +with tempfile.TemporaryDirectory(prefix="s2a-pgo-") as d:
+          +    tmp = Path(d)
+          +    hot = tmp / "hot.c"
+          +    hot.write_text("int trained(int x) { return x ? 3 : 7; }\n", encoding="utf-8")
+          +    main = tmp / "main.c"
+          +    main.write_text("""
+          +#include <stdio.h>
+          +#include "pgo_snapshot.h"
+          +int __llvm_profile_runtime;
+          +int trained(int);
+          +static void dump(const char *name) {
+          +    void *p = NULL; size_t n = 0;
+          +    if (s2a_pgo_snapshot(&p, &n)) exit(20);
+          +    FILE *f = fopen(name, "wb");
+          +    if (!f || fwrite(p, 1, n, f) != n || fclose(f)) exit(21);
+          +    free(p);
+          +}
+          +int main(void) {
+          +    volatile int sum = 0;
+          +    for (int i = 0; i < 2; ++i) sum += trained(i);
+          +    dump("first.profraw");
+          +    for (int i = 0; i < 3; ++i) sum += trained(i);
+          +    dump("last.profraw");
+          +    return sum == 23 ? 0 : 22;
+          +}
+          +""", encoding="utf-8")
+          +    cc = ["xcrun", "--sdk", "macosx", "clang"]
+          +    prof = run(["xcrun", "--find", "llvm-profdata"]).strip()
+          +    print(run(cc + ["--version"]))
+          +    run(cc + ["-O0", "-Wall", "-Wextra", "-Werror", "-fprofile-instr-generate",
+          +              "-fprofile-update=atomic", "-I" + str(ROOT/"runtime/include"),
+          +              str(main), str(hot), "-o", str(tmp/"probe")])
+          +    env = dict(os.environ, LLVM_PROFILE_FILE=str(tmp/"must-not-exist.profraw"))
+          +    run([str(tmp/"probe")], cwd=tmp, env=env)
+          +    assert not (tmp/"must-not-exist.profraw").exists(), "default atexit writer was not disabled"
+          +    for stem, expected in [("first", 2), ("last", 5)]:
+          +        run([prof, "merge", "--failure-mode=any", str(tmp/(stem+".profraw")), "-o", str(tmp/(stem+".profdata"))])
+          +        out = run([prof, "show", "--all-functions", "--counts", str(tmp/(stem+".profdata"))])
+          +        match = re.search(r"trained:\s.*?Function count:\s*(\d+)", out, re.S)
+          +        assert match and int(match[1]) == expected, out
+          +    # Exercise the delivered merge helper on overlapping diagnostic exports.
+          +    sid = "12345678-1234-1234-1234-123456789abc"
+          +    archives = []
+          +    for seq, stem in enumerate(("first", "last"), 1):
+          +        raw = (tmp/(stem+".profraw")).read_bytes()
+          +        m = dict(schema=1, session_id=sid, sequence=seq, raw_file="host.profraw",
+          +                 source="a"*40, shell_id="b"*16, compiler="smoke-only", profile_version="1",
+          +                 bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+          +        arc = tmp/(stem+".zip")
+          +        with zipfile.ZipFile(arc, "w") as z:
+          +            z.writestr(f"pgo/{sid}/session.json", json.dumps(m))
+          +            z.writestr(f"pgo/{sid}/host.profraw", raw)
+          +        archives.append(str(arc))
+          +    run([sys.executable, "-B", str(ROOT/"tools/pgo_merge.py"), *archives, archives[-1],
+          +         "--llvm-profdata", prof, "--output", str(tmp/"dedup.profdata")])
+          +    out = run([prof, "show", "--all-functions", "--counts", str(tmp/"dedup.profdata")])
+          +    assert int(re.search(r"trained:\s.*?Function count:\s*(\d+)", out, re.S)[1]) == 5, out
+          +    run(cc + ["-O2", "-Werror=profile-instr-out-of-date",
+          +              "-fprofile-instr-use="+str(tmp/"last.profdata"), "-c", str(hot), "-o", str(tmp/"used.o")])
+          +    print("PASS: raw LLVM buffers parse; counts 2 then 5 (not 7); profile-use compiles; no atexit output")
+          diff --git a/tools/pgo_merge.py b/tools/pgo_merge.py
+          new file mode 100644
+          index 00000000..875a4976
+          --- /dev/null
+          +++ b/tools/pgo_merge.py
+          @@ -0,0 +1,115 @@
+          +#!/usr/bin/env python3
+          +"""Merge local diagnostic ZIPs, once per process session. Requires matching Apple LLVM."""
+          +import argparse
+          +import hashlib
+          +import json
+          +from pathlib import Path, PurePosixPath
+          +import re
+          +import subprocess
+          +import tempfile
+          +import zipfile
+          +
+          +MAX_BYTES = 32 * 1024 * 1024
+          +MAX_TOTAL = 512 * 1024 * 1024
+          +IDENTITY = ("source", "shell_id", "compiler", "profile_version")
+          +UUID = r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}"
+          +
+          +def collect(inputs):
+          +    latest, identity, total = {}, None, 0
+          +    for path in inputs:
+          +        with zipfile.ZipFile(path) as z:
+          +            entries = z.infolist()
+          +            names = [e.filename for e in entries]
+          +            if len(names) != len(set(names)) or len(names) > 20000:
+          +                raise ValueError("Duplicate ZIP entries or too many entries")
+          +            for entry in entries:
+          +                name = entry.orig_filename
+          +                p = PurePosixPath(name)
+          +                if p.is_absolute() or ".." in p.parts or "\\" in name or ":" in name or "\x00" in name:
+          +                    raise ValueError("Unsafe ZIP path: " + name)
+          +            metas = [n for n in names if re.fullmatch("pgo/" + UUID + "/session.json", n)]
+          +            if not metas:
+          +                raise ValueError(f"No PGO sessions in {path}")
+          +            for name in metas:
+          +                if z.getinfo(name).file_size > 64 * 1024:
+          +                    raise ValueError("PGO metadata too large")
+          +                m = json.loads(z.read(name))
+          +                if not isinstance(m, dict):
+          +                    raise ValueError("Invalid PGO metadata")
+          +                sid = name.split("/")[1]
+          +                sequence, size = m.get("sequence"), m.get("bytes")
+          +                leaf = m.get("raw_file")
+          +                if (m.get("schema") != 1 or m.get("session_id") != sid or
+          +                    type(sequence) is not int or sequence < 1 or
+          +                    type(size) is not int or not 0 < size <= MAX_BYTES or
+          +                    not isinstance(leaf, str) or not re.fullmatch(r"host(?:-[0-9]+)?\.profraw", leaf)):
+          +                    raise ValueError("Invalid PGO session fields")
+          +                if (not re.fullmatch(r"[a-f0-9]{7,40}", str(m.get("source", ""))) or
+          +                    not re.fullmatch(r"[a-f0-9]{16,64}", str(m.get("shell_id", ""))) or
+          +                    not isinstance(m.get("compiler"), str) or not m["compiler"] or
+          +                    not re.fullmatch(r"[0-9]+", str(m.get("profile_version", "")))):
+          +                    raise ValueError("Missing build/compiler identity")
+          +                build = tuple(m[k] for k in IDENTITY)
+          +                if identity is not None and identity != build:
+          +                    raise ValueError("Mixed source/Shell/compiler/profile versions; collect one build at a time")
+          +                identity = build
+          +                raw_name = str(PurePosixPath(name).parent / leaf)
+          +                try:
+          +                    info = z.getinfo(raw_name)
+          +                except KeyError as exc:
+          +                    raise ValueError("Missing PGO raw profile") from exc
+          +                total += info.file_size
+          +                if info.file_size != size or total > MAX_TOTAL:
+          +                    raise ValueError("PGO size mismatch or total size limit exceeded")
+          +                raw = z.read(raw_name)
+          +                if hashlib.sha256(raw).hexdigest() != m.get("sha256"):
+          +                    raise ValueError("PGO checksum mismatch")
+          +                previous = latest.get(sid)
+          +                if previous:
+          +                    old = previous["metadata"]
+          +                    if sequence == old["sequence"] and m["sha256"] != old["sha256"]:
+          +                        raise ValueError("Conflicting data for the same session/revision")
+          +                    if sequence <= old["sequence"]:
+          +                        continue
+          +                latest[sid] = {"metadata": m, "raw": raw}
+          +    if not latest:
+          +        raise ValueError("No PGO profiles supplied")
+          +    return [latest[sid] for sid in sorted(latest)]
+          +
+          +def main():
+          +    ap = argparse.ArgumentParser(description=__doc__)
+          +    ap.add_argument("zip", nargs="+", type=Path)
+          +    ap.add_argument("--llvm-profdata", default="llvm-profdata")
+          +    ap.add_argument("--output", type=Path, default=Path("S2Arm-host.profdata"))
+          +    ap.add_argument("--validate-only", action="store_true")
+          +    args = ap.parse_args()
+          +    rows = collect(args.zip)
+          +    print(f"Validated {len(rows)} unique process session(s); only latest cumulative snapshot per session")
+          +    print(json.dumps({k: rows[0]["metadata"][k] for k in IDENTITY}, ensure_ascii=False))
+          +    if args.validate_only:
+          +        print("Container/checksum validation only; LLVM data has NOT been parsed.")
+          +        return
+          +    args.output.parent.mkdir(parents=True, exist_ok=True)
+          +    # Temp output beside destination, so a failed LLVM merge cannot replace a good profile.
+          +    with tempfile.TemporaryDirectory(prefix="s2a-pgo-", dir=args.output.parent) as d:
+          +        tmp = Path(d)
+          +        raw_files = []
+          +        for row in rows:
+          +            p = tmp / (row["metadata"]["session_id"] + ".profraw")
+          +            p.write_bytes(row["raw"])
+          +            raw_files.append(str(p))
+          +        merged = tmp / "merged.profdata"
+          +        subprocess.run([args.llvm_profdata, "merge", "--failure-mode=any", "-o", str(merged), *raw_files], check=True)
+          +        subprocess.run([args.llvm_profdata, "show", str(merged)], check=True)
+          +        provenance = dict(schema=1, identity={k: rows[0]["metadata"][k] for k in IDENTITY},
+          +                          sessions=[r["metadata"] for r in rows],
+          +                          llvm_profdata=subprocess.check_output([args.llvm_profdata, "--version"], text=True),
+          +                          profdata_sha256=hashlib.sha256(merged.read_bytes()).hexdigest())
+          +        manifest = tmp / "provenance.json"
+          +        manifest.write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
+          +        merged.replace(args.output)
+          +        manifest.replace(Path(str(args.output) + ".json"))
+          +    print("Merged profile: " + str(args.output.resolve()))
+          +
+          +if __name__ == "__main__":
+          +    main()
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings pack/stage_inputs/shell.tsv runtime/fps/cd57b23fa4bbad65.tsv runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/fps_botw_190_test.py
+          git add -- docs/superpowers/plans/2026-11-16-pgo-collect.md docs/superpowers/specs/2026-11-16-pgo-collect-design.md 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app.m ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings ios/pgo.h ios/pgo.m pack/stage_inputs/shell.tsv runtime/build.mk runtime/fps/cd57b23fa4bbad65.tsv runtime/include/pgo_snapshot.h runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/mk/pgo_snapshot.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c runtime/tests/t_pgo_snapshot.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/fps_botw_190_test.py tests/pgo_collect_test.py tests/pgo_runtime_smoke.py tools/pgo_merge.py
           tree="$(git write-tree)"
-          test "$tree" = "ed2b61b4647c71fd4ee085c4e59e341bd9f95086"
+          test "$tree" = "b8dee230586399f4f25905ee3da7faccfdc90a73"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
           export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
-          export GIT_AUTHOR_DATE='2026-11-15T15:30:00Z' GIT_COMMITTER_DATE='2026-11-15T15:30:00Z'
-          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.0 official render scaling with prewarm, local diagnostics, external pacing and compensated timing; upstream dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae')"
+          export GIT_AUTHOR_DATE='2026-11-16T05:00:00Z' GIT_COMMITTER_DATE='2026-11-16T05:00:00Z'
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.0 host PGO collection with prewarm, local diagnostics, external pacing and compensated timing; upstream dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae')"
           git checkout -b s2arm-2x-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
           python3 pack/shell/closure.py pyimports
@@ -2134,7 +2821,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo 'S2ARM_CI_REVISION=4.0-prewarm-localdiag-airplay-speed1'
+          echo 'S2ARM_CI_REVISION=4.0-pgo-collect1'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
           "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"
@@ -2189,11 +2876,36 @@ jobs:
           cat "$logs/rscale-gpu-status.txt" >> "$GITHUB_STEP_SUMMARY"
           cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify real LLVM profiles and cumulative session merge
+        working-directory: source
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/s2arm-output/logs"
+          xcrun --sdk macosx clang --version > "$logs/pgo-compiler.txt"
+          xcrun llvm-profdata --version >> "$logs/pgo-compiler.txt"
+          xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -Iruntime/include runtime/tests/t_pgo_snapshot.c -o "$RUNNER_TEMP/t_pgo_snapshot"
+          "$RUNNER_TEMP/t_pgo_snapshot"
+          python3 -B tests/pgo_collect_test.py 2>&1 | tee "$logs/pgo-container-tests.log"
+          python3 -B tests/pgo_runtime_smoke.py 2>&1 | tee "$logs/pgo-roundtrip.log"
+          echo 'Host LLVM raw/merge/profile-use: PASS; cumulative counts 2 then 5; duplicate exports count once. iPhone collection: NOT TESTED.' > "$logs/pgo-status.txt"
+
       - name: Build Shell with the upstream entry point
         working-directory: source
         run: |
           set -euo pipefail
           bash pack/shell_build.sh "$RUNNER_TEMP/s2arm-output/Shell" 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/build.log"
+
+      - name: Verify profiling counters in the iOS executable
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/s2arm-output/logs"
+          binary="$RUNNER_TEMP/s2arm-output/Shell/root/S2Arm"
+          xcrun otool -l "$binary" > "$logs/pgo-ios-sections.txt"
+          grep -q '__llvm_prf_cnts' "$logs/pgo-ios-sections.txt"
+          grep -q '__llvm_prf_data' "$logs/pgo-ios-sections.txt"
+          grep -q '__llvm_prf_names' "$logs/pgo-ios-sections.txt"
+          echo 'iOS host LLVM instrumentation sections: PASS. On-device saves and gameplay: NOT TESTED.' >> "$logs/pgo-status.txt"
+          cat "$logs/pgo-status.txt" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Package Shell and record provenance
         working-directory: source
@@ -2208,6 +2920,8 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
+            echo "PGO COLLECTION ONLY: CPU instrumentation overhead; not a performance-optimized IPA."
+            cat "$output/logs/pgo-status.txt"
             echo "Custom build: S2Arm 0.4.0 official render scaling + prewarm fix2 + local diagnostics + slow-display routing + BOTW timing; default 1x"
             echo "Upstream baseline: dcd05e5fa84c8c5c68b6ba66e3b1c6de016636ae"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
@@ -2230,18 +2944,21 @@ jobs:
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
           cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"
           cp "$output/logs/diag-export-status.txt" "$output/artifact/diag-export-status.txt"
+          cp "$output/logs/pgo-status.txt" "$output/artifact/pgo-status.txt"
+          cp "$output/logs/pgo-compiler.txt" "$output/artifact/pgo-compiler.txt"
+          cp tools/pgo_merge.py "$output/artifact/pgo_merge.py"
           cp "$output/logs/airplay-fps-status.txt" "$output/artifact/airplay-fps-status.txt"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
           printf '0.4.0\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. AirPlay fallback, BOTW timing, GPU visuals and export UI remain to be verified on device. BOTW requires repackaging with this matching Engine; existing IPA modules do not gain compensation by replacing Shell alone.' >> "$GITHUB_STEP_SUMMARY"
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt pgo-status.txt pgo-compiler.txt pgo_merge.py > SHA256SUMS.txt
+          echo 'PGO collection Shell built; overhead expected, no speed-up claimed. Export local diagnostics after playing to obtain pgo/ sessions. Download S2Arm-0.4.0-Shell-PGO-Collect from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. AirPlay fallback, BOTW timing, GPU visuals and export UI remain to be verified on device. BOTW requires repackaging with this matching Engine; existing IPA modules do not gain compensation by replacing Shell alone.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.4.0-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed
+          name: S2Arm-0.4.0-Shell-PGO-Collect
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0
@@ -2275,7 +2992,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.4.0-PSOFix-build-logs
+          name: S2Arm-0.4.0-PGO-build-logs
           path: ${{ runner.temp }}/s2arm-output/logs/
           if-no-files-found: warn
           retention-days: 7

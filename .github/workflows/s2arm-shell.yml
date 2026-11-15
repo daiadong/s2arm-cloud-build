@@ -114,7 +114,7 @@ jobs:
           git show HEAD:ios/diag.m > "$RUNNER_TEMP/diag-before-local.m"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
           diff --git "a/docs/\345\235\221\350\256\260\345\275\225.md" "b/docs/\345\235\221\350\256\260\345\275\225.md"
-          index 1d14d3f1..61c6d58b 100644
+          index 1d14d3f1..234f92ef 100644
           --- "a/docs/\345\235\221\350\256\260\345\275\225.md"
           +++ "b/docs/\345\235\221\350\256\260\345\275\225.md"
           @@ -2,6 +2,22 @@
@@ -140,6 +140,18 @@ jobs:
            ## 11-14 池表拔钉后晚到的退役请求把本次提交还指着的贴图移出常驻集合（t_nvn_pool_tex ⑩ 偶发红）
            
            **现象**：`t_nvn_pool_tex` 第 ⑩ 项偶发红：取表把第 91 项换成占位后，旧贴图 X 已不在常驻集合（期望在，本次提交还没做完）。单跑很少红，整份门禁并发时约 1/30–1/16。真机上同一路径就是 GPU 读非常驻内存。
+          @@ -5213,3 +5229,11 @@ Adreno 650 / Android 17 原创 NDK 探针，同样 8 状态各 4096 像素均符
+           **现象**：v0.4.0 候选 Mac 出包（带补丁）完成页金色横幅整块是方括号键名：[export.export.boost.title]、[export.export.boost.cheats] …；下面「补丁打入结果」正常。
+           **根因**：ExportSessionView 调 BoostBanner 时把 x 传进去当取文案函数，x 会再加一次「export.」前缀，横幅里的键本来就是 export.boost.*；单测 BoostBannerTests 直接喂字典，测不到调用处。
+           **做法**：调用处改传不加前缀的 BackendText.launcherText。
+          +
+          +## 自定义 AirPlaySpeed 改写器缺少 tolower 声明（2026-11-15）
+          +
+          +**现象与根因**：自定义补丁在 `runtime/rewriter/rewriter.c` 的构建号比对中调用 `tolower`，却未引入 `<ctype.h>`；用户提供的 macOS CI 日志在该调用报隐式函数声明并中止构建。
+          +
+          +**读数**：Windows GCC 8.1，以 `-std=c11 -Werror=implicit-function-declaration -fsyntax-only` 检查同一完整源文件，修前退出 1，唯一该类错误为 `tolower`；只补 `<ctype.h>` 后退出 0，CMake 的 `s2a-rewrite` 目标重新构建成功。保留原有 Windows 编译警告；此检查不代表 macOS Shell 已编译通过或游戏真机验证通过。
+          +
+          +**做法**：在使用处显式包含标准头，不依赖宽松编译器放行；重新生成内嵌补丁、源码树指纹与 Windows 改写器，要求使用新工作流提交重新运行构建。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
           index d16ca3e5..1c7098e6 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
@@ -1242,10 +1254,18 @@ jobs:
           +present30 if slot 2042 == 0
           +w main 0x1dad0e0 f32 0.5 off 1
           diff --git a/runtime/rewriter/rewriter.c b/runtime/rewriter/rewriter.c
-          index 276e0798..91340355 100644
+          index 276e0798..19858ed7 100644
           --- a/runtime/rewriter/rewriter.c
           +++ b/runtime/rewriter/rewriter.c
-          @@ -124,6 +124,8 @@ typedef struct {
+          @@ -4,6 +4,7 @@
+           #include "rewriter.h"
+           #include <capstone/capstone.h>
+           #include <lz4.h>
+          +#include <ctype.h>
+           #include <errno.h>
+           #include <inttypes.h>
+           #include <limits.h>
+          @@ -124,6 +125,8 @@ typedef struct {
            } DetailCache;
            typedef struct {
              s2a_rewrite_request r;
@@ -1254,7 +1274,7 @@ jobs:
              FILE *log, *out;
              csh cs;
              cs_insn* one;
-          @@ -3702,20 +3704,35 @@ static int fps_reg(const char* s, char kind) {
+          @@ -3702,20 +3705,35 @@ static int fps_reg(const char* s, char kind) {
            static int fps_skip;
            static int fps_precheck(FILE* f) {
              char line[512], bad[400] = "";
@@ -1292,7 +1312,7 @@ jobs:
              if (!nbad) return 0;
              fprintf(stderr, "[黄] %s 帧率表 %d 行原字不符（%s；版本不同或表错），本模块的改指令行整组不改\n", g->r.module, nbad, bad);
              bump("fps_orig_skip");
-          @@ -3733,6 +3750,7 @@ static void fps_rows(int phase) {
+          @@ -3733,6 +3751,7 @@ static void fps_rows(int phase) {
              }
              if (phase == 0) fps_skip = fps_precheck(f);
              if (fps_skip) { fclose(f); return; }
@@ -1300,7 +1320,7 @@ jobs:
              char line[512];
              while (fgets(line, sizeof(line), f)) {
                char* h = strchr(line, '#');
-          @@ -3818,6 +3836,7 @@ static void fps_rows(int phase) {
+          @@ -3818,6 +3837,7 @@ static void fps_rows(int phase) {
                bump(keystr);
              }
              fclose(f);
@@ -1308,7 +1328,7 @@ jobs:
            }
            /* 社区补丁双路（S2A_CPATCH_TSV，pack/cpatch.py 出；直连线 10-27，与 patch_nso.py 同语义同字节）：
             *   w <模块> <偏移> <原字> <新字>        分析前原位常写（补丁往填充区写的新代码：关着时没有入口跳过来，照样经过本改写器翻译）
-          @@ -5125,6 +5144,7 @@ static void load(void) {
+          @@ -5125,6 +5145,7 @@ static void load(void) {
              REQUIRE(fread(src, 1, n, f) == (size_t)n);
              closeout();
              REQUIRE(!memcmp(src, "NSO0", 4));
@@ -1999,7 +2019,7 @@ jobs:
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
           git add -- 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings pack/stage_inputs/shell.tsv runtime/fps/cd57b23fa4bbad65.tsv runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/fps_botw_190_test.py
           tree="$(git write-tree)"
-          test "$tree" = "d01db64ce818d566c33fb4fa39bec20a10b53fff"
+          test "$tree" = "ed2b61b4647c71fd4ee085c4e59e341bd9f95086"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'

@@ -3,7 +3,7 @@
 # Self-contained: the patch and matching-source packaging are included below.
 # GPU eligibility checks unified memory, Metal4 and residency creation.
 # Runtime-only PSO prewarm fix plus local iOS diagnostics export; source / closure checks stay enabled.
-name: S2Arm 0.4.0 Host PGO Collect (macOS)
+name: S2Arm 0.4.0 Host PGO Collect R2 (macOS)
 
 on:
   workflow_dispatch:
@@ -181,7 +181,7 @@ jobs:
           +
           +交付自包含 macOS Actions YAML、合并工具和中文采集说明；用户手动运行 CI，下载匹配 Shell 后再组装独立 IPA。保留 1X 掌机、原比例和 S2A_BG_PURGE=0；不修改当前游戏设置。Windows 验证 C 快照错误分支、合并规则、源码接线与 YAML；CI 必须验证真实 LLVM profile 生成、读取和 profile-use 编译，以及 iOS 产物的 profile sections。iPhone 采集和分享面板等待真机验证。
           diff --git "a/docs/\345\235\221\350\256\260\345\275\225.md" "b/docs/\345\235\221\350\256\260\345\275\225.md"
-          index 1d14d3f1..45c20b07 100644
+          index 1d14d3f1..48c3e9c5 100644
           --- "a/docs/\345\235\221\350\256\260\345\275\225.md"
           +++ "b/docs/\345\235\221\350\256\260\345\275\225.md"
           @@ -2,6 +2,22 @@
@@ -207,7 +207,7 @@ jobs:
            ## 11-14 池表拔钉后晚到的退役请求把本次提交还指着的贴图移出常驻集合（t_nvn_pool_tex ⑩ 偶发红）
            
            **现象**：`t_nvn_pool_tex` 第 ⑩ 项偶发红：取表把第 91 项换成占位后，旧贴图 X 已不在常驻集合（期望在，本次提交还没做完）。单跑很少红，整份门禁并发时约 1/30–1/16。真机上同一路径就是 GPU 读非常驻内存。
-          @@ -5213,3 +5229,17 @@ Adreno 650 / Android 17 原创 NDK 探针，同样 8 状态各 4096 像素均符
+          @@ -5213,3 +5229,24 @@ Adreno 650 / Android 17 原创 NDK 探针，同样 8 状态各 4096 像素均符
            **现象**：v0.4.0 候选 Mac 出包（带补丁）完成页金色横幅整块是方括号键名：[export.export.boost.title]、[export.export.boost.cheats] …；下面「补丁打入结果」正常。
            **根因**：ExportSessionView 调 BoostBanner 时把 x 传进去当取文案函数，x 会再加一次「export.」前缀，横幅里的键本来就是 export.boost.*；单测 BoostBannerTests 直接喂字典，测不到调用处。
            **做法**：调用处改传不加前缀的 BackendText.launcherText。
@@ -225,6 +225,13 @@ jobs:
           +- 根因：`with_suffix(".json")` 会把 profile 输出与来源清单解析为同一目标。
           +- 实验：Windows / Python 3.14，真实临时目录、LLVM 命令边界替身；期望二进制保持不变 → 旧实现 1 个断言失败，修复后 8 组合并测试通过。这个测试不验证 LLVM 数据格式或手机运行。
           +- 做法：来源清单追加 `.json`，例如 `S2Arm-host.profdata.json`；两个目标始终不同。真实 LLVM raw/merge/profile-use 由 macOS CI 另行核对。
+          +
+          +## 手动 PGO 运行时覆盖必须使用强定义（2026-11-16）
+          +
+          +- 现象：PGO 采集工作流运行 43739396470，Apple Clang 21.0.0 / Xcode 27.1，在 `pgo_runtime_smoke.py` 报 `default atexit writer was not disabled`，尚未进入 Shell 构建。
+          +- 已复现的机制：`int __llvm_profile_runtime;` 是暂定定义；LLVM 19.1.1 交叉编译 Mach-O，显式 `-fcommon` 时符号类型为 C，不能保证阻止运行库的默认初始化对象参与链接。改为 LLVM 官方 `instrprof-without-libc.c` 测试使用的 `int __llvm_profile_runtime = 0;` 后，macOS / iOS 目标、`-fcommon` / `-fno-common` 四种组合均为 S。该 CI 的默认符号类型尚未实测，不能仅从版本号推断。
+          +- 读数：旧定义的 Mach-O 强符号回归检查 → 1 项断言失败；显式初始化后 → 4/4 通过。Windows x64 / LLVM 19.1.1 的真实运行时对照 → 默认程序会写 profile，手动程序不生成默认文件；两次缓冲区快照计数分别 2 和 5，重复诊断合并仍为 5，profile-use 编译通过。这不等于 Apple Clang 21 或 iPhone 已验证。
+          +- 做法：生产定义与烟雾测试共用同一条声明；CI 输出旧定义的默认符号类型，测试两种 common 模式，并继续保留真实运行时“不产生默认文件”的断言与默认写入负对照，不以跳过检查掩盖问题。
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
           index d16ca3e5..1c7098e6 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
@@ -1069,10 +1076,10 @@ jobs:
           +BOOL s2a_pgo_add_to_diag(NSString *directory, NSMutableArray *files, NSString **error);
           diff --git a/ios/pgo.m b/ios/pgo.m
           new file mode 100644
-          index 00000000..885ea172
+          index 00000000..012ed3cb
           --- /dev/null
           +++ b/ios/pgo.m
-          @@ -0,0 +1,148 @@
+          @@ -0,0 +1,149 @@
           +// Collection-only host instrumentation. Normal Shells compile these hooks as no-ops.
           +#import "pgo.h"
           +#if S2A_PGO_COLLECT
@@ -1080,8 +1087,9 @@ jobs:
           +#import <CommonCrypto/CommonDigest.h>
           +#include "pgo_snapshot.h"
           +#include <stdio.h>
-          +// Disables compiler-rt's default initializer/atexit writer (unreliable on iOS).
-          +int __llvm_profile_runtime;
+          +// A strong definition suppresses compiler-rt's default initializer/atexit writer.
+          +// Keep the initializer: a tentative definition becomes overridable with -fcommon.
+          +int __llvm_profile_runtime = 0;
           +uint64_t __llvm_profile_get_version(void);
           +static dispatch_queue_t queue;
           +static dispatch_source_t timer;
@@ -2498,14 +2506,64 @@ jobs:
           +
           +if __name__ == "__main__":
           +    unittest.main()
+          diff --git a/tests/pgo_runtime_hook_test.py b/tests/pgo_runtime_hook_test.py
+          new file mode 100644
+          index 00000000..1d5440d8
+          --- /dev/null
+          +++ b/tests/pgo_runtime_hook_test.py
+          @@ -0,0 +1,43 @@
+          +#!/usr/bin/env python3
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Cross-compile the actual runtime hook definition to Mach-O; no Apple SDK needed."""
+          +import argparse
+          +from pathlib import Path
+          +import re
+          +import subprocess
+          +import tempfile
+          +
+          +ROOT = Path(__file__).resolve().parents[1]
+          +
+          +def main():
+          +    ap = argparse.ArgumentParser(description=__doc__)
+          +    ap.add_argument("--clang")
+          +    ap.add_argument("--nm")
+          +    args = ap.parse_args()
+          +    cc = [args.clang] if args.clang else ["xcrun", "clang"]
+          +    nm = [args.nm] if args.nm else ["xcrun", "nm"]
+          +    declaration = re.search(r"^int __llvm_profile_runtime[^;]*;", (ROOT/"ios/pgo.m").read_text(encoding="utf-8"), re.M)
+          +    assert declaration, "Missing manual profile runtime definition"
+          +    with tempfile.TemporaryDirectory(prefix="s2a-pgo-hook-") as d:
+          +        tmp = Path(d)
+          +        source = tmp/"hook.c"
+          +        # Record this compiler's default for the old tentative form. Apple Clang
+          +        # and upstream Clang need not share defaults; do not infer it from version.
+          +        source.write_text("int __llvm_profile_runtime;\n", encoding="utf-8")
+          +        obj = tmp/"old-default.o"
+          +        subprocess.run(cc + ["-target", "arm64-apple-macosx14.0", "-c", str(source), "-o", str(obj)], check=True)
+          +        print("Old tentative definition with compiler defaults:", flush=True)
+          +        print(subprocess.check_output(nm+[str(obj)], text=True), flush=True)
+          +        source.write_text(declaration[0]+"\n", encoding="utf-8")
+          +        for target in ("arm64-apple-macosx14.0", "arm64-apple-ios18.0"):
+          +            for flag in ("-fcommon", "-fno-common"):
+          +                obj = tmp/"hook.o"
+          +                subprocess.run(cc + ["-target", target, flag, "-c", str(source), "-o", str(obj)], check=True)
+          +                symbols = subprocess.check_output(nm+[str(obj)], text=True)
+          +                line = next(line for line in symbols.splitlines() if line.endswith(" ___llvm_profile_runtime"))
+          +                assert line.split()[-2].upper() not in ("C", "U"), f"{target} {flag}: runtime override is not a strong definition: {line}"
+          +                print(f"PASS {target} {flag}: {line.strip()}")
+          +
+          +if __name__ == "__main__":
+          +    main()
           diff --git a/tests/pgo_runtime_smoke.py b/tests/pgo_runtime_smoke.py
           new file mode 100644
-          index 00000000..efaae688
+          index 00000000..6558d019
           --- /dev/null
           +++ b/tests/pgo_runtime_smoke.py
-          @@ -0,0 +1,76 @@
+          @@ -0,0 +1,100 @@
           +#!/usr/bin/env python3
-          +"""Real LLVM buffer roundtrip, exact cumulative counts, and profile-use compile (macOS CI)."""
+          +"""Real LLVM buffer roundtrip, exact cumulative counts, and profile-use compile."""
+          +import argparse
           +import os
           +import hashlib
           +import json
@@ -2516,6 +2574,10 @@ jobs:
           +import sys
           +import zipfile
           +ROOT = Path(__file__).resolve().parents[1]
+          +ap = argparse.ArgumentParser(description=__doc__)
+          +ap.add_argument("--clang", help="Default: xcrun --sdk macosx clang")
+          +ap.add_argument("--llvm-profdata", help="Default: xcrun --find llvm-profdata")
+          +args = ap.parse_args()
           +
           +def run(args, **kw):
           +    return subprocess.check_output(args, text=True, **kw)
@@ -2525,10 +2587,13 @@ jobs:
           +    hot = tmp / "hot.c"
           +    hot.write_text("int trained(int x) { return x ? 3 : 7; }\n", encoding="utf-8")
           +    main = tmp / "main.c"
-          +    main.write_text("""
+          +    # Exercise the actual production definition; do not keep a second copy here.
+          +    hook = re.search(r"^int __llvm_profile_runtime[^;]*;", (ROOT/"ios/pgo.m").read_text(encoding="utf-8"), re.M)
+          +    assert hook, "Missing manual profile runtime definition"
+          +    probe_source = """
           +#include <stdio.h>
           +#include "pgo_snapshot.h"
-          +int __llvm_profile_runtime;
+          +RUNTIME_HOOK
           +int trained(int);
           +static void dump(const char *name) {
           +    void *p = NULL; size_t n = 0;
@@ -2545,16 +2610,32 @@ jobs:
           +    dump("last.profraw");
           +    return sum == 23 ? 0 : 22;
           +}
-          +""", encoding="utf-8")
-          +    cc = ["xcrun", "--sdk", "macosx", "clang"]
-          +    prof = run(["xcrun", "--find", "llvm-profdata"]).strip()
+          +"""
+          +    main.write_text(probe_source.replace("RUNTIME_HOOK", hook[0]), encoding="utf-8")
+          +    cc = [args.clang] if args.clang else ["xcrun", "--sdk", "macosx", "clang"]
+          +    prof = args.llvm_profdata or run(["xcrun", "--find", "llvm-profdata"]).strip()
           +    print(run(cc + ["--version"]))
-          +    run(cc + ["-O0", "-Wall", "-Wextra", "-Werror", "-fprofile-instr-generate",
-          +              "-fprofile-update=atomic", "-I" + str(ROOT/"runtime/include"),
-          +              str(main), str(hot), "-o", str(tmp/"probe")])
+          +    flags = ["-O0", "-Wall", "-Wextra", "-Werror", "-fprofile-instr-generate",
+          +             "-fprofile-update=atomic", "-I" + str(ROOT/"runtime/include")]
+          +    if os.name == "nt":
+          +        flags += ["-D_CRT_SECURE_NO_WARNINGS"]
+          +    suffix = ".exe" if os.name == "nt" else ""
+          +    # Negative control: prove this toolchain would otherwise write a default file.
+          +    control = tmp/"control.c"
+          +    control.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+          +    control_exe = tmp/("control"+suffix)
+          +    run(cc + flags + [str(control), "-o", str(control_exe)])
+          +    control_raw = tmp/"control.profraw"
+          +    run([str(control_exe)], cwd=tmp, env=dict(os.environ, LLVM_PROFILE_FILE=str(control_raw)))
+          +    assert control_raw.exists() and control_raw.stat().st_size, "negative control did not write a default profile"
+          +    print("PASS negative control: default runtime writes a profile", flush=True)
+          +    probe = tmp/("probe"+suffix)
+          +    run(cc + flags + [str(main), str(hot), "-o", str(probe)])
           +    env = dict(os.environ, LLVM_PROFILE_FILE=str(tmp/"must-not-exist.profraw"))
-          +    run([str(tmp/"probe")], cwd=tmp, env=env)
-          +    assert not (tmp/"must-not-exist.profraw").exists(), "default atexit writer was not disabled"
+          +    assert not (tmp/"must-not-exist.profraw").exists(), "unexpected profile before probe execution"
+          +    run([str(probe)], cwd=tmp, env=env)
+          +    unexpected = tmp/"must-not-exist.profraw"
+          +    assert not unexpected.exists(), f"default atexit writer was not disabled ({unexpected.stat().st_size} bytes)"
           +    for stem, expected in [("first", 2), ("last", 5)]:
           +        run([prof, "merge", "--failure-mode=any", str(tmp/(stem+".profraw")), "-o", str(tmp/(stem+".profdata"))])
           +        out = run([prof, "show", "--all-functions", "--counts", str(tmp/(stem+".profdata"))])
@@ -2704,9 +2785,9 @@ jobs:
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- docs/superpowers/plans/2026-11-16-pgo-collect.md docs/superpowers/specs/2026-11-16-pgo-collect-design.md 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app.m ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings ios/pgo.h ios/pgo.m pack/stage_inputs/shell.tsv runtime/build.mk runtime/fps/cd57b23fa4bbad65.tsv runtime/include/pgo_snapshot.h runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/mk/pgo_snapshot.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c runtime/tests/t_pgo_snapshot.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/fps_botw_190_test.py tests/pgo_collect_test.py tests/pgo_runtime_smoke.py tools/pgo_merge.py
+          git add -- docs/superpowers/plans/2026-11-16-pgo-collect.md docs/superpowers/specs/2026-11-16-pgo-collect-design.md 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app.m ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings ios/pgo.h ios/pgo.m pack/stage_inputs/shell.tsv runtime/build.mk runtime/fps/cd57b23fa4bbad65.tsv runtime/include/pgo_snapshot.h runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/mk/pgo_snapshot.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c runtime/tests/t_pgo_snapshot.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/fps_botw_190_test.py tests/pgo_collect_test.py tests/pgo_runtime_hook_test.py tests/pgo_runtime_smoke.py tools/pgo_merge.py
           tree="$(git write-tree)"
-          test "$tree" = "b8dee230586399f4f25905ee3da7faccfdc90a73"
+          test "$tree" = "c40da4b11227b0c61a8bade3f75c3f85513e1468"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
@@ -2821,7 +2902,7 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo 'S2ARM_CI_REVISION=4.0-pgo-collect1'
+          echo 'S2ARM_CI_REVISION=4.0-pgo-collect2'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
           "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"
@@ -2886,6 +2967,7 @@ jobs:
           xcrun --sdk macosx clang -std=c11 -Wall -Wextra -Werror -Iruntime/include runtime/tests/t_pgo_snapshot.c -o "$RUNNER_TEMP/t_pgo_snapshot"
           "$RUNNER_TEMP/t_pgo_snapshot"
           python3 -B tests/pgo_collect_test.py 2>&1 | tee "$logs/pgo-container-tests.log"
+          python3 -B tests/pgo_runtime_hook_test.py 2>&1 | tee "$logs/pgo-runtime-hook.log"
           python3 -B tests/pgo_runtime_smoke.py 2>&1 | tee "$logs/pgo-roundtrip.log"
           echo 'Host LLVM raw/merge/profile-use: PASS; cumulative counts 2 then 5; duplicate exports count once. iPhone collection: NOT TESTED.' > "$logs/pgo-status.txt"
 

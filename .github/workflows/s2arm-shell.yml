@@ -4150,8 +4150,17 @@ jobs:
 
           def validate_counts(show):
               hot = re.search(r'^  s2a_far_g2h:\s*\n    Hash: 0x([0-9a-fA-F]+)\s*\n    Counters: 1\s*\n    Function count: (\d+)', show, re.M)
-              if not hot or int(hot[1], 16) != 24 or int(hot[2]) != 65805033 or not re.search(r'^Total functions: 3248$', show, re.M):
-                  raise ValueError('Apple LLVM did not read the expected real iPhone execution counts')
+              if not hot or int(hot[1], 16) != 24 or int(hot[2]) != 65805033:
+                  raise ValueError('Merged profile has unexpected s2a_far_g2h hash/counters/count')
+              # This exact raw sample has 3248 records, including 15 duplicate name/hash
+              # pairs. LLVM merges those into 3233 indexed records without losing counts.
+              expected = {'Total functions': 3233, 'Maximum function count': 65805033,
+                          'Maximum internal block count': 68204770}
+              for label, value in expected.items():
+                  match = re.search(r'^' + re.escape(label) + r':\s*(\d+)\s*$', show, re.M)
+                  if not match or int(match[1]) != value:
+                      actual = match[1] if match else 'missing'
+                      raise ValueError(f'Merged profile {label}: expected {value}, got {actual}')
 
 
           def configure_makefile(text):
@@ -4220,7 +4229,7 @@ jobs:
               makefile.write_text(configured, encoding='utf-8', newline='\n')
               (args.logs / 'pgo-status.txt').write_text(
                   'Original iPhone session/checksum and exact Apple Clang identity: PASS.\n'
-                  'Apple LLVM raw merge and 3248 function records: PASS; s2a_far_g2h count 65805033.\n'
+                  'Apple LLVM merge: PASS; 3233 indexed function records (3248 raw records, 15 duplicates); s2a_far_g2h count 65805033.\n'
                   'iOS profile-use compilation, collector removal and device performance: pending.\n', encoding='utf-8')
               print('Prepared source-pinned real-device PGO use; iOS compilation still pending.')
 

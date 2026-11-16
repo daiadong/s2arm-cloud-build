@@ -1,21 +1,22 @@
+# Experimental Metal3 optimization build. Reuses existing resources; phone performance is unverified.
 # Add this file to YOUR repository at .github/workflows/s2arm-shell.yml.
 # Official rendering scale on pinned S2Arm 0.4.3; default remains 1x.
 # Self-contained: the patch and matching-source packaging are included below.
 # GPU eligibility checks unified memory, Metal4 and residency creation.
 # Runtime-only PSO prewarm fix plus local iOS diagnostics export; source / closure checks stay enabled.
-name: S2Arm 0.4.3 Metal4 Test LocalDiag (macOS)
+name: S2Arm 0.4.3 Metal3 Cache Optimization Test LocalDiag (macOS)
 
 on:
   workflow_dispatch:
   push:
-    branches: ['test/metal4-present-completion']
+    branches: ['codex/s2arm-043-metal3-opt']
     paths: ['.github/workflows/s2arm-shell.yml']
 
 permissions:
   contents: read
 
 concurrency:
-  group: s2arm-shell-043-metal4-test
+  group: s2arm-shell-043-metal3-opt
   cancel-in-progress: false
 
 jobs:
@@ -105,7 +106,7 @@ jobs:
             dotnet --info
           } 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/environment.txt"
 
-      - name: Apply private fixes and Metal4 experiment; check Foundation regression
+      - name: Apply PSO and local diagnostics fixes; check Foundation regression
         working-directory: source
         run: |
           set -euo pipefail
@@ -113,78 +114,11 @@ jobs:
           git show HEAD:graphics/nvn/gfx/nvn/nvn_mtl.m > "$RUNNER_TEMP/nvn_mtl-before-prewarm.m"
           git show HEAD:ios/diag.m > "$RUNNER_TEMP/diag-before-local.m"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
-          diff --git a/THIRD_PARTY_LICENSES.md b/THIRD_PARTY_LICENSES.md
-          index afe395cd..0dc6494d 100644
-          --- a/THIRD_PARTY_LICENSES.md
-          +++ b/THIRD_PARTY_LICENSES.md
-          @@ -8,7 +8,7 @@ S2Arm 本身以 Apache License 2.0 授权（仓库根目录 [LICENSE](LICENSE) 
-           | --- | --- | --- | --- | --- | --- |
-           | Ryujinx 树 | 目录 `compat/tree`（旧文档记 1.3.2） | MIT | https://github.com/Ryujinx/Ryujinx ，许可 `compat/tree/LICENSE.txt` | 是（编进 Mac 宿主 / 出包工具） | 是（编进 iOS 宿主） |
-           | Ryujinx WSI | 派生自 Ryujinx | MIT | `graphics/vulkan/wsi`，`LICENSE.Ryujinx.txt` | 安卓/Vulkan 构建用 | 否（不进 iOS IPA） |
-          -| 直连图形层部分代码 | 提交 `86d9ba12` | MIT | 许可全文 `graphics/nvn/LICENSE`，版权 © 2026 seedds | 是 | 是 |
-          +| 直连图形层部分代码 | 提交 `86d9ba12`；私有 Metal 4 测试分支另适配上屏 allocator 修复及测试 `82ab25b40b75b3b7ce7e1da614ea15f231e8a029` | MIT | 许可全文 `graphics/nvn/LICENSE`，版权 © 2026 seedds | 是 | 是 |
-           | ns2pro-bridge | 基线 `4d7ce092` | MIT | https://github.com/DanielZhangyc/ns2pro-bridge ，`runtime/ns2pro/LICENSE` | 按需编进 framework 时是 | 按需编进 framework 时是 |
-           | Vulkan-Headers | 1.4.363 | Apache-2.0 OR MIT | https://github.com/KhronosGroup/Vulkan-Headers ，`graphics/nvn/third_party/vulkan-headers` | 否（只是编译用头） | 否 |
-           | SPIRV-Cross | vulkan-sdk-1.4.363.0 | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Cross ，源码在 `graphics/third_party/spirv_cross`（旧文档写「不进仓库」是错的）。命令行另从 Homebrew 打进 .app | 是（源码在引擎树；`spirv-cross` 在 Runtime/bin） | 是（`graphics/build.mk` 把源码编进 iOS 渲染器静态库 `libnxgal.a`，首遇着色器在机上现编用） |
-          diff --git a/docs/metal4-test-plan.md b/docs/metal4-test-plan.md
-          new file mode 100644
-          index 00000000..fd1ebd0b
-          --- /dev/null
-          +++ b/docs/metal4-test-plan.md
-          @@ -0,0 +1,14 @@
-          +# 0.4.3 Metal 4 isolated experiment
-          +
-          +Baseline: a543f07aa8eecec832f56baa3ccd3f23b5774cc9.
-          +Branch: test/metal4-present-completion. Daily installation and game library are untouched.
-          +
-          +1. Add a portable regression executing the production allocator wait and feedback statements; prove the baseline fails.
-          +2. Port NXNative 82ab25b40b75b3b7ce7e1da614ea15f231e8a029's per-slot GPU completion tracking. Preserve queue progress, skipped frames, AA/FX release and Metal 3 feedback.
-          +3. Add NXGAL_BE=mtl4-test as an explicit experimental opt-in. Missing/ordinary values retain the iOS 26 fallback; unsupported OS/GPU still cannot select Metal 4.
-          +4. Adapt the upstream real GPU regression; compile in macOS CI and execute only on a capable GPU. Generate a separate self-contained YAML including existing local diagnostics and private fixes.
-          +5. Run portable checks, baseline and mutation controls; review the complete branch, commit and deliver the YAML. iPhone validation remains pending until the new Shell is built and assembled.
-          +
-          +Scope: this tests allocator correctness, not a guaranteed fix for backboardd #311 or a promised FPS improvement. No game resources need regeneration for these runtime-only changes.
-          +
-          +Decision: use a standalone local clone under E:/project/S2ARM instead of a linked worktree so later C-drive cleanup cannot invalidate this repository. No remote publication is included.
-          diff --git a/docs/metal4-test-usage.md b/docs/metal4-test-usage.md
-          new file mode 100644
-          index 00000000..e393b582
-          --- /dev/null
-          +++ b/docs/metal4-test-usage.md
-          @@ -0,0 +1,28 @@
-          +# 0.4.3 Metal 4 测试分支
-          +
-          +仓库：`E:\project\S2ARM\S2Arm-Metal4-Test`
-          +分支：`test/metal4-present-completion`
-          +基线：`a543f07aa8eecec832f56baa3ccd3f23b5774cc9`（现有 0.4.3 私有修复源码）。
-          +
-          +## 构建与使用
-          +
-          +1. 将 `E:\project\S2ARM\s2arm-shell-0.4.3-metal4-test.yml` 的内容替换到自己 GitHub 构建仓库的 `.github/workflows/s2arm-shell.yml`，手动运行 `S2Arm 0.4.3 Metal4 Test LocalDiag (macOS)`。
-          +2. 下载产物 `S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag`。它是 Shell 和匹配源码，仍需组装 IPA。测试包与日常包分开保留，诊断仍只在本地导出。
-          +3. 新 IPA 组装后，先不加测试开关运行，iOS 26.x 仍选 Metal 3。保留目前使用的 1X、掌机设置。
-          +4. 仅在该测试 IPA 的 `env.txt` 中加入 `NXGAL_BE=mtl4-test`，完全划掉 LiveContainer 后重开。诊断日志应出现 `direct backend: Metal 4 (EXPERIMENTAL NXGAL_BE=mtl4-test`。
-          +5. 用相同存档、相同场景对比。若黑屏、GPU 错误或系统界面重启，将该行改成 `NXGAL_BE=mtl3`，完全划掉 LiveContainer 后重开，导出本地诊断包。
-          +
-          +此改动只涉及运行壳，不需要重新生成游戏资源。原有日常程序、游戏库、配置均未改动。
-          +
-          +## 实际改动与验证边界
-          +
-          +- 适配 NXNative `82ab25b4`：每组上屏 allocator/command buffer/UV buffer 等自己的 GPU 完成记录；丢帧或未提交只推进队列进度，不会释放仍在 GPU 使用的槽位。
-          +- iOS 26 默认 Metal 3；只有完整匹配 `mtl4-test` 且 OS/GPU 支持才切 Metal 4。普通 `mtl4` 保持原先行为。
-          +- Metal 3 的完成反馈、AA/MetalFX busy 释放和全局队列进度保留。
-          +- Windows：生产等待/反馈语句 9 项通过；基线 5 项失败；撤掉等待、撤掉完成记录、写错槽位 3 个负对照均失败；后端选择 19 项通过。
-          +- macOS Metal 测试从 NXNative 的真实队列/离屏 drawable 用例适配，覆盖丢帧和连续三帧在途；CI 必须编译，GPU 满足条件才执行 Metal 3/4 两条路径。不能执行时明确标记 SKIPPED。
-          +- Windows 无 Xcode：本机没有编译 iOS，也没有验证真机、系统合成器 #311 或帧率提升。此次没有移植 `88c7e03f`，当前运行壳未使用该提交修复的特化描述符 API。
-          +
-          +重新生成 YAML：先 `git add` 保存完整源文件索引，再运行 `python tools/metal4_test_workflow.py --template E:\project\S2ARM\s2arm-shell-0.4.3.yml --output E:\project\S2ARM\s2arm-shell-0.4.3-metal4-test.yml`。YAML 内含补丁及完整源码树校验，独立输出避免自引用。
-          +
-          +参考：https://github.com/seedds/nxnative/commit/82ab25b40b75b3b7ce7e1da614ea15f231e8a029
-          diff --git a/docs/坑记录.md b/docs/坑记录.md
-          index eb1ff351..9659fed8 100644
-          --- a/docs/坑记录.md
-          +++ b/docs/坑记录.md
-          @@ -6159,3 +6159,17 @@ Adreno 650 / Android 17 原创 NDK 探针（修复二进制 SHA-256 前缀 `682b
+          diff --git "a/docs/\345\235\221\350\256\260\345\275\225.md" "b/docs/\345\235\221\350\256\260\345\275\225.md"
+          index eb1ff351..e757afb2 100644
+          --- "a/docs/\345\235\221\350\256\260\345\275\225.md"
+          +++ "b/docs/\345\235\221\350\256\260\345\275\225.md"
+          @@ -6159,3 +6159,10 @@ Adreno 650 / Android 17 原创 NDK 探针（修复二进制 SHA-256 前缀 `682b
            **现象**：v0.4.0 候选 Mac（屏幕最高 120 Hz）开着带 60 / 120 两档帧率补丁的游戏，自动档日志「帧率档 60 帧（默认…屏幕最高 60 Hz）」，随后才「窗口所在屏最高刷新 120 Hz」。
            **根因**：起局选档（cpatch.c fps_pick）早于建窗，front_screen_max_fps 还是 0、按 60 算；窗口建好知道是 120 后没人重挑。
            **做法**：front_mac.m screen_fps_note 刷新率变了就调 s2a_cpatch_screen_changed，自动档（玩家没选、起局没给 S2A_FPS_PICK）按新屏幕重挑。t_cpatch_levels ⑤。
@@ -195,54 +129,11 @@ jobs:
           +- 机制：运行时入口改为本地分享与本地化键迁移是两个接口；仅替换旧版翻译文件会丢失新版键。按键迁移并补齐六语，保留新版崩溃自动关闭与恢复逻辑。
           +- 读数（Windows，基线 3ddf11c0，未运行 iPhone）：新增本地化 2 项用例修前失败、修后通过；28 张表重复键 0；诊断入口检查官方基线 7/34 不符，迁移后 34/34 通过；外屏策略 9/9；预热函数提取 5/5。Foundation/Metal 与真实 FPS 运行时测试保留 macOS CI 门禁，本机不能代跑。
           +- 资源兼容检查：现有 6 款 ios kit 均被新版 usable_kit 接受，hostAbi=1、dmshChain=0be3f28548fd；不代表 iPhone 已实测或重建有帧率收益。新 cpatch 组列、宽屏高半配对和离线着色器绑定修正属于重新生成才能进入游戏产物的改动。
-          +
-          +## 私有 0.4.3 Metal 4 分支：上屏队列进度不能代表槽位 GPU 完成（11-17）
-          +
-          +- 现象：生产 display-link 丢帧/跳过上屏会推进 `g_pq_done`，旧 allocator 等待因此可能放行尚未完成的 GPU 工作。
-          +- 根因：队列已处理票号与每组上屏资源的 GPU 完成票号混用。适配 NXNative `82ab25b4`，仅提交完成反馈推进该组 `g_present_alloc_done`。
-          +- 读数（Windows GCC，基线 `a543f07a`，合成状态、不含游戏）：执行原样生产等待与反馈 C 语句的 9 项检查，期望旧版失败 → 旧版 5 项失败；期望修复通过 → 9/9；分别恢复全局等待、撤销完成记录、写错槽位 → 三组均失败。后端选择 19/19；无开关/普通 `mtl4` 在 iOS 26 仍回退，`mtl4-test` 只在支持的 OS/GPU 上生效。
-          +- 射程：只证明票号生命周期与选择规则；未在本机编译 Metal、未测 iPhone，不能据此判定 #311 已修复或 FPS 会提高。
-          diff --git a/graphics/nvn/gfx/nvn/nvn_be.h b/graphics/nvn/gfx/nvn/nvn_be.h
-          index 7429a98f..dc34f408 100644
-          --- a/graphics/nvn/gfx/nvn/nvn_be.h
-          +++ b/graphics/nvn/gfx/nvn/nvn_be.h
-          @@ -1,5 +1,6 @@
-           // Backend of the direct replay layer (#277 D3-1): Metal 4 or Metal 3, picked once in mtl_init. Same switch as the gal renderer (graphics/metal/gal_be.h), plus a device check:
-          -//   NXGAL_BE=mtl3 forces Metal 3 (A/B on systems 26 and up; off by default; any other value does nothing, as in gal);
-          +//   NXGAL_BE=mtl3 forces Metal 3; this private test branch also accepts mtl4-test
-          +//   as an explicit experiment on a compatible OS/GPU. Other values do nothing.
-           //   systems 26 and up whose GPU is in the Metal 4 family (supportsFamily:MTLGPUFamilyMetal4) take Metal 4;
-           //   everything else takes Metal 3: systems below 26, GPUs without Metal 4 on 26 (A12X / A12Z / A13 class), and iOS / iPadOS 26.x (below 27):
-           //   11-09 #311 iPhone18,2 iOS 26.5.2：Metal 4 上屏时系统合成进程 backboardd 在 CA::OGL::MetalContext::add_shared_event（capture_detached ← 分离图层）断言崩溃、
-          @@ -15,6 +16,11 @@ enum { NVN_BE_MTL3 = 3, NVN_BE_MTL4 = 4 };
-           static inline int nvn_be_pick(const char *env, int os26, int family4, int ios26x, const char **why) {
-               if (env && !strcmp(env, "mtl3")) { *why = "forced by NXGAL_BE=mtl3"; return NVN_BE_MTL3; }
-               if (!os26) { *why = "system below macOS / iOS 26"; return NVN_BE_MTL3; }
-          +    if (env && !strcmp(env, "mtl4-test")) {
-          +        if (!family4) { *why = "GPU not in the Metal 4 family"; return NVN_BE_MTL3; }
-          +        *why = ios26x ? "EXPERIMENTAL NXGAL_BE=mtl4-test: iOS 26 compositor safety not verified" : "EXPERIMENTAL NXGAL_BE=mtl4-test";
-          +        return NVN_BE_MTL4;
-          +    }
-               if (ios26x) { *why = "iOS 26: no detached-layer direct present (backboardd add_shared_event assert, #311), Metal 3"; return NVN_BE_MTL3; }
-               if (!family4) { *why = "GPU not in the Metal 4 family"; return NVN_BE_MTL3; }
-               *why = "GPU in the Metal 4 family"; return NVN_BE_MTL4;
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          index 0a2a86ed..ed7aed2f 100644
+          index 0a2a86ed..266bc3a0 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
           +++ b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          @@ -147,6 +147,11 @@ static uint64_t g_vbuf_resolve, g_vbuf_reuse, g_vbuf_set, g_vbuf_skip;
-           static id g_present_args;   // tab_new
-           static id<MTLBuffer> g_present_uv[3];
-           static uint64_t g_present_alloc_fence[3];
-          +// Per-slot GPU completion, protected by g_pq_mu. Queue progress (g_pq_done)
-          +// also advances on dropped/unsubmitted frames and cannot authorize allocator,
-          +// command-buffer or UV-buffer reuse. Only the commit feedback retires a slot.
-          +// Adapted from NXNative 82ab25b4, copyright 2026 seedds, MIT (../../LICENSE).
-          +static uint64_t g_present_alloc_done[3];
-           static pthread_mutex_t g_pq_mu = PTHREAD_MUTEX_INITIALIZER;
-           static pthread_cond_t g_pq_cv = PTHREAD_COND_INITIALIZER;
-           static pthread_cond_t g_link_cv = PTHREAD_COND_INITIALIZER;
-          @@ -9819,12 +9824,15 @@ static NSArray<NSString *> *warm_paths(int say) {
+          @@ -9819,12 +9819,15 @@ static NSArray<NSString *> *warm_paths(int say) {
                if (e && !strcmp(e, "off")) return nil;
                if (e && *e) return @[@(e)];
                NSString *seed = [shmap_path().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"];
@@ -261,291 +152,6 @@ jobs:
            }
            // Tell the front end at once that the first frame will wait for the prewarm (10-30 device line, Monster Hunter Rise cold start mhrise_1030172905_1: the game's first present, 0.96 s, came
            //   before its first submission, where the shader map loads lazily and the prewarm runs, so the loading page was taken down at that present and the 15 s prewarm showed black).
-          @@ -17198,7 +17206,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
-               }
-               if (g_present_alloc_fence[alloc_i]) {
-                   DM_BLOCK_BEGIN(); pthread_mutex_lock(&g_pq_mu);
-          -        while (g_pq_done < g_present_alloc_fence[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
-          +        while (g_present_alloc_done[alloc_i] < g_present_alloc_fence[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
-                   pthread_mutex_unlock(&g_pq_mu); DM_BLOCK_END();
-               }
-               id<MTL4CommandBuffer> cb = nil; id<MTLCommandBuffer> cb3 = nil;
-          @@ -17229,7 +17237,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
-               NvPresentFX *fxs = g_present_fx ? g_present_fx_slots[alloc_i] : nil;   // 这一帧没用 MetalFX 时也标：槽里的图只要在途就不能被下一次重建换掉
-               fb_add(o, ^(id<MTL4CommitFeedback> f) {
-                   if (f.error && !mtl_gpu_cb_error(f.error, "present", ticket)) MLOG("【红】 display command buffer error: %s", f.error.description.UTF8String);
-          -        pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = NO; if (fxs) fxs->busy = NO; if (ticket > g_pq_done) g_pq_done = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
-          +        pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = NO; if (fxs) fxs->busy = NO; if (ticket > g_pq_done) g_pq_done = ticket;
-          +        if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket;
-          +        g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
-               });
-               pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = YES; if (fxs) fxs->busy = YES; g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
-               if (g_m3) { if (mdr) [cb3 presentDrawable:mdr]; present_m3(cb3, dr, ticket, period, target_ts); m3_commit(cb3, o, nil, 0); }
-          diff --git a/graphics/nvn/tests/present_alloc_fixture.c b/graphics/nvn/tests/present_alloc_fixture.c
-          new file mode 100644
-          index 00000000..b1029709
-          --- /dev/null
-          +++ b/graphics/nvn/tests/present_alloc_fixture.c
-          @@ -0,0 +1,53 @@
-          +// SPDX-License-Identifier: Apache-2.0
-          +// Copyright 2026 S2Arm contributors
-          +// The Python probe inserts the production statements; no duplicate wait policy.
-          +#include <stdint.h>
-          +#include <stdio.h>
-          +#include <string.h>
-          +#include <setjmp.h>
-          +static uint64_t g_present_alloc_fence[3], g_present_alloc_done[3], g_pq_done;
-          +static int g_pq_mu, g_pq_cv, g_pq_inflight, broadcasts, checks, failed;
-          +static jmp_buf waited;
-          +typedef struct { int busy; } Slot;
-          +#define NO 0
-          +#define DM_BLOCK_BEGIN() ((void)0)
-          +#define DM_BLOCK_END() ((void)0)
-          +static void pthread_mutex_lock(int *m) { (void)m; }
-          +static void pthread_mutex_unlock(int *m) { (void)m; }
-          +static void pthread_cond_broadcast(int *c) { (void)c; broadcasts++; }
-          +static void pthread_cond_wait(int *c, int *m) { (void)c; (void)m; longjmp(waited, 1); }
-          +static int reusable(int alloc_i) {
-          +    if (setjmp(waited)) return 0;
-          +    /* PRODUCTION_WAIT */
-          +    return 1;
-          +}
-          +static void completed(int alloc_i, uint64_t ticket, Slot *aa, Slot *fxs) {
-          +    (void)alloc_i; // Baseline feedback does not yet account for an individual slot.
-          +    /* PRODUCTION_FEEDBACK */
-          +}
-          +static void check(const char *name, int ok) { checks++; failed += !ok; printf("%s %s\n", ok ? "PASS" : "FAIL", name); }
-          +static void reset(void) {
-          +    memset(g_present_alloc_fence, 0, sizeof g_present_alloc_fence);
-          +    memset(g_present_alloc_done, 0, sizeof g_present_alloc_done);
-          +    g_pq_done = 0; g_pq_inflight = 0; broadcasts = 0;
-          +}
-          +int main(void) {
-          +    reset(); check("unused-slot", reusable(1));
-          +    g_present_alloc_fence[1] = 1; g_pq_done = 3;
-          +    check("dropped-ticket", !reusable(1)); // tickets 1,3,4; 1 is still on GPU
-          +    reset(); g_present_alloc_fence[2] = 5; g_pq_done = 7;
-          +    check("contiguous-tickets", !reusable(2)); // tickets 5,6,7,8
-          +    reset(); g_present_alloc_fence[1] = 1; g_pq_done = 4;
-          +    check("skipped-present", !reusable(1)); // skipped ticket 4 cannot retire 1
-          +    g_pq_inflight = 2; completed(0, 3, NULL, NULL);
-          +    check("other-slot-feedback", !reusable(1));
-          +    Slot aa = {1}, fx = {1}; completed(1, 1, &aa, &fx);
-          +    check("own-feedback", reusable(1));
-          +    check("queue-progress-monotonic", g_pq_done == 4);
-          +    check("slot-effects", !aa.busy && !fx.busy && g_pq_inflight == 0 && broadcasts == 2);
-          +    g_present_alloc_fence[1] = 7; g_present_alloc_done[1] = 7;
-          +    completed(1, 4, NULL, NULL);
-          +    check("old-feedback-monotonic", reusable(1));
-          +    printf("Portable present accounting: %d checks, %d failures; Metal NOT TESTED\n", checks, failed);
-          +    return failed != 0;
-          +}
-          diff --git a/graphics/nvn/tests/present_alloc_probe.py b/graphics/nvn/tests/present_alloc_probe.py
-          new file mode 100644
-          index 00000000..5aba0c9c
-          --- /dev/null
-          +++ b/graphics/nvn/tests/present_alloc_probe.py
-          @@ -0,0 +1,56 @@
-          +#!/usr/bin/env python3
-          +# SPDX-License-Identifier: Apache-2.0
-          +# Copyright 2026 S2Arm contributors
-          +"""Execute production present wait/feedback statements as portable C.
-          +
-          +This verifies ticket lifetime accounting, not Metal or pthread scheduling.
-          +The native t_nvn_present_alloc test separately exercises real GPU completion.
-          +"""
-          +import argparse
-          +import pathlib
-          +import re
-          +import subprocess
-          +import tempfile
-          +
-          +
-          +def extract(source):
-          +    start = source.index('    if (g_present_alloc_fence[alloc_i]) {')
-          +    end = source.index('\n    }', start) + len('\n    }')
-          +    wait = source[start:end]
-          +    feedback_start = source.index('fb_add(o, ^(id<MTL4CommitFeedback> f) {', end)
-          +    feedback_end = source.index('\n    });', feedback_start)
-          +    feedback = source[feedback_start:feedback_end]
-          +    start = feedback.index('pthread_mutex_lock(&g_pq_mu);')
-          +    end = feedback.index('pthread_mutex_unlock(&g_pq_mu);', start) + len('pthread_mutex_unlock(&g_pq_mu);')
-          +    return wait, feedback[start:end]
-          +
-          +
-          +def main():
-          +    ap = argparse.ArgumentParser(description=__doc__)
-          +    ap.add_argument('--source', type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[1] / 'gfx/nvn/nvn_mtl.m')
-          +    ap.add_argument('--cc', default='cc')
-          +    ap.add_argument('--expect-old-bug', action='store_true')
-          +    args = ap.parse_args()
-          +    wait, feedback = extract(args.source.read_text(encoding='utf-8'))
-          +    fixture = pathlib.Path(__file__).with_name('present_alloc_fixture.c').read_text(encoding='utf-8')
-          +    unit = fixture.replace('/* PRODUCTION_WAIT */', wait).replace('/* PRODUCTION_FEEDBACK */', feedback)
-          +    with tempfile.TemporaryDirectory(prefix='s2a-present-alloc-') as tmp:
-          +        src, exe = pathlib.Path(tmp) / 'probe.c', pathlib.Path(tmp) / 'probe.exe'
-          +        src.write_text(unit, encoding='utf-8')
-          +        subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)], check=True)
-          +        run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
-          +    print(run.stdout, end='')
-          +    if run.stderr:
-          +        print(run.stderr, end='')
-          +    if args.expect_old_bug:
-          +        expected = {'dropped-ticket', 'contiguous-tickets', 'skipped-present', 'other-slot-feedback', 'old-feedback-monotonic'}
-          +        failed = set(re.findall(r'^FAIL (\S+)$', run.stdout, re.MULTILINE))
-          +        if run.returncode == 1 and failed == expected:
-          +            print('PASS baseline negative control: exactly five lifetime-accounting cases rejected')
-          +            return 0
-          +        raise SystemExit('Negative control did not reproduce exactly the expected old bug')
-          +    return run.returncode
-          +
-          +
-          +if __name__ == '__main__':
-          +    raise SystemExit(main())
-          diff --git a/graphics/nvn/tests/t_nvn_be.c b/graphics/nvn/tests/t_nvn_be.c
-          index bf4df639..e8644ac6 100644
-          --- a/graphics/nvn/tests/t_nvn_be.c
-          +++ b/graphics/nvn/tests/t_nvn_be.c
-          @@ -6,6 +6,11 @@
-           
-           int main(void) {
-               static const struct { const char *env; int os26, family4, ios26x, want; const char *why; } c[] = {
-          +        {"mtl4-test", 1, 1, 1, NVN_BE_MTL4, "EXPERIMENTAL NXGAL_BE=mtl4-test: iOS 26 compositor safety not verified"},
-          +        {"mtl4-test", 1, 1, 0, NVN_BE_MTL4, "EXPERIMENTAL NXGAL_BE=mtl4-test"},
-          +        {"mtl4-test", 0, 1, 1, NVN_BE_MTL3, "system below macOS / iOS 26"},
-          +        {"mtl4-test", 1, 0, 1, NVN_BE_MTL3, "GPU not in the Metal 4 family"},
-          +        {"MTL4-TEST", 1, 1, 1, NVN_BE_MTL3, "iOS 26: no detached-layer direct present (backboardd add_shared_event assert, #311), Metal 3"},
-                   {NULL, 1, 1, 0, NVN_BE_MTL4, "GPU in the Metal 4 family"},        // 26 起、M1 / A14 起：缺省 Metal 4
-                   {"mtl3", 1, 1, 0, NVN_BE_MTL3, "forced by NXGAL_BE=mtl3"},         // 26 上强制（A/B）
-                   {"mtl4", 1, 1, 0, NVN_BE_MTL4, "GPU in the Metal 4 family"},       // 只有 mtl3 才强制，与 gal 同
-          diff --git a/graphics/nvn/tests/t_nvn_present_alloc.m b/graphics/nvn/tests/t_nvn_present_alloc.m
-          new file mode 100644
-          index 00000000..5a8c0fe9
-          --- /dev/null
-          +++ b/graphics/nvn/tests/t_nvn_present_alloc.m
-          @@ -0,0 +1,122 @@
-          +// SPDX-License-Identifier: MIT
-          +// Copyright (c) 2026 seedds
-          +// Adapted for S2Arm 0.4.3; original license: ../LICENSE.
-          +// Upstream: seedds/nxnative@82ab25b40b75b3b7ce7e1da614ea15f231e8a029.
-          +// Display-link presents with the GPU held back: a present must not reset a command allocator whose own present has not run yet. Real Metal 4 queue and offscreen
-          +// drawables; the link's callback is called by hand (no window, no game files). Two cases: a dropped frame (two presents in flight) and one frame per tick (three in flight).
-          +#include "../gfx/nvn/nvn_mtl.m"
-          +@interface FakeLinkUpdate : NSObject
-          +@property id<CAMetalDrawable> drawable;
-          +@property CFTimeInterval targetPresentationTimestamp;
-          +@end
-          +@implementation FakeLinkUpdate
-          +@end
-          +static CAMetalLayer *g_test_layer;
-          +__attribute__((visibility("default"))) void *s2a_mac_front_layer(void) { return (__bridge void *)g_test_layer; }
-          +static int checks, failed;
-          +#define CHECK(name, ok) do { int pass = !!(ok); checks++; failed += !pass; printf("%s: %s\n", name, pass ? "PASS" : "FAIL"); } while (0)
-          +static tex_t source(unsigned serial, uint8_t left, uint8_t right) {   // 8x8 grey, the left four columns one value and the right four another
-          +    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:8 height:8 mipmapped:NO];
-          +    d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageShaderRead;
-          +    id<MTLTexture> mt = [g_dev newTextureWithDescriptor:d]; uint8_t bytes[256];
-          +    for (int i = 0; i < 64; i++) { uint8_t v = i % 8 < 4 ? left : right; bytes[4 * i] = bytes[4 * i + 1] = bytes[4 * i + 2] = v; bytes[4 * i + 3] = 255; }
-          +    [mt replaceRegion:MTLRegionMake2D(0, 0, 8, 8) mipmapLevel:0 withBytes:bytes bytesPerRow:32];
-          +    tex_t t = {.magic=MAGIC('T','E','X',0), .serial=serial};
-          +    t.d.width = t.d.height = 8; t.d.depth = t.d.levels = t.d.samples = 1;
-          +    t.d.target = NVN_TEXTURE_TARGET_2D; t.d.format = NVN_FORMAT_RGBA8;
-          +    serial_put(t.serial, mt); res_add(mt); res_commit(); return t;
-          +}
-          +static CAMetalLayer *offscreen_layer(void) {
-          +    CAMetalLayer *l = [CAMetalLayer layer]; l.device = g_dev; l.pixelFormat = MTLPixelFormatBGRA8Unorm; l.framebufferOnly = NO; l.drawableSize = CGSizeMake(8, 8); return l;
-          +}
-          +// Every present gets a drawable of its own layer. With all drawables from one offscreen layer, 1 of 100 runs under CPU load got ticket 1's IOSurface back from
-          +// nextDrawable while the gate still held ticket 1's present, and ticket 4 then drew over the picture this test reads back
-          +static NSMutableArray *g_layers;
-          +static id<CAMetalDrawable> drawable(void) {
-          +    CAMetalLayer *l = offscreen_layer(); if (!g_m3) [g_q4 addResidencySet:l.residencySet]; [g_layers addObject:l]; id<CAMetalDrawable> dr = [l nextDrawable]; if (!dr) { fputs("FAIL missing offscreen drawable\n", stderr); exit(1); } return dr;
-          +}
-          +static NvMetalDisplayLinkDelegate *g_delegate;
-          +static id<CAMetalDrawable> tick_with(id<CAMetalDrawable> dr) {   // one display-link callback (it does not look at the link)
-          +    FakeLinkUpdate *u = [FakeLinkUpdate new]; u.drawable = dr; u.targetPresentationTimestamp = CACurrentMediaTime() + 0.016;
-          +    [g_delegate metalDisplayLink:(CAMetalDisplayLink *)(id)u needsUpdate:(CAMetalDisplayLinkUpdate *)u];
-          +    return dr;
-          +}
-          +static id<CAMetalDrawable> tick(void) { return tick_with(drawable()); }
-          +// The tick that lands on a used allocator runs on its own thread, so the test sees whether it waits; its drawable is taken before the thread starts
-          +static id<CAMetalDrawable> g_held; static dispatch_semaphore_t g_held_done;
-          +static void *held_tick(void *arg) { (void)arg; @autoreleasepool { tick_with(g_held); } dispatch_semaphore_signal(g_held_done); return NULL; }
-          +static void reuse_case(id<CAMetalDrawable> dr, id<MTLSharedEvent> gate, uint64_t open, uint64_t ticket, int inflight, uint64_t old) {
-          +    char name[160];
-          +    g_held = dr; g_held_done = dispatch_semaphore_create(0); pthread_t th; pthread_create(&th, NULL, held_tick, NULL);
-          +    int returned = dispatch_semaphore_wait(g_held_done, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC)) == 0;
-          +    pthread_mutex_lock(&g_pq_mu); int inside = g_pq_read == ticket && g_pq_inflight == inflight; pthread_mutex_unlock(&g_pq_mu);
-          +    snprintf(name, sizeof name, "ticket %llu reached present_now", (unsigned long long)ticket); CHECK(name, returned || inside);
-          +    snprintf(name, sizeof name, "allocator %llu is not reused while ticket %llu is on the GPU", (unsigned long long)(ticket % 3), (unsigned long long)old); CHECK(name, !returned);
-          +    gate.signaledValue = open;
-          +    if (!returned) returned = dispatch_semaphore_wait(g_held_done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0;
-          +    snprintf(name, sizeof name, "ticket %llu is presented once the GPU gets to ticket %llu", (unsigned long long)ticket, (unsigned long long)old); CHECK(name, returned);
-          +    if (!returned) { fputs("FAIL present thread did not resume\n", stderr); exit(1); }
-          +    pthread_join(th, NULL);
-          +    pthread_mutex_lock(&g_pq_mu); struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 5;
-          +    while (g_pq_inflight && pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts) != ETIMEDOUT) {}
-          +    int left = g_pq_inflight; uint64_t done = g_pq_done; pthread_mutex_unlock(&g_pq_mu);
-          +    CHECK("every present completed", left == 0 && done == ticket);
-          +}
-          +static int bad_pixels(id<MTLTexture> t, uint8_t left, uint8_t right) {
-          +    id<MTLBuffer> out = [g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
-          +    id<MTLCommandBuffer> cb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
-          +    [b copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(8, 8, 1)
-          +        toBuffer:out destinationOffset:0 destinationBytesPerRow:32 destinationBytesPerImage:256];
-          +    [b endEncoding]; [cb commit]; [cb waitUntilCompleted];
-          +    const uint8_t *p = out.contents; int bad = 0;
-          +    for (int i = 0; i < 64; i++) { uint8_t v = i % 8 < 4 ? left : right; bad += p[4 * i] != v || p[4 * i + 1] != v || p[4 * i + 2] != v; }
-          +    if (bad) { printf("first row:"); for (int i = 0; i < 8; i++) printf(" %u", p[4 * i]); printf(" (want %u x4, %u x4)\n", left, right); }
-          +    return bad;
-          +}
-          +static void hold_gpu(id<MTLSharedEvent> gate, uint64_t value) {
-          +    if (!g_m3) [g_q4 waitForEvent:gate value:value];
-          +    else { id<MTLCommandBuffer> cb = [g_q3 commandBuffer]; [cb encodeWaitForEvent:gate value:value]; [cb commit]; }
-          +}
-          +int main(void) { @autoreleasepool {
-          +    alarm(45); setbuf(stdout, NULL);
-          +    setenv("DM_PRESENT_FIFO", "1", 1);
-          +    setenv("S2A_ANTI_ALIASING", "None", 1);
-          +    setenv("S2A_SCALING_FILTER", "Bilinear", 1);
-          +    setenv("S2A_RES_SCALE", "1", 1);
-          +    mtl_init();
-          +    g_test_layer = offscreen_layer(); g_layers = [NSMutableArray new];
-          +    // Display-link mode without a link thread: link_sync sees a started link that is not there yet, the present thread leaves the queue to the callback
-          +    g_dm_present_link = 1; g_link_applied = 1; g_link_started = 1; g_link_owns_layer = 1; g_delegate = [NvMetalDisplayLinkDelegate new];
-          +    tex_t a = source(91001, 50, 150), b = source(91002, 100, 100), c = source(91003, 200, 200);
-          +    static const int left_half[4] = {0, 0, 4, 8};
-          +    id<MTLSharedEvent> gate = [g_dev newSharedEvent];
-          +    // Every callback moves g_pq_done to ticket - 1, so it is no guard for the allocator: the presents below wait only if the allocator's own completion is checked.
-          +    // On main both cases fail the reuse check, and the earlier ticket's drawable reads back black (0 in every pixel): its command buffer was encoded again before the GPU ran it
-          +
-          +    // A dropped frame: ticket 1 on allocator 1, then 3 (2 dropped) on allocator 0, then 4 on allocator 1 again with two presents in flight
-          +    hold_gpu(gate, 1);   // nothing committed to the Metal 4 queue from here runs until the gate opens
-          +    present_enqueue(&a, 1. / 60, NULL, 0);
-          +    id<CAMetalDrawable> first = tick();
-          +    present_enqueue(&b, 1. / 60, NULL, 0); present_enqueue(&b, 1. / 60, NULL, 0); present_enqueue(&c, 1. / 60, left_half, 0);
-          +    tick();
-          +    printf("after the drop: read %llu, done %llu, in flight %d\n", (unsigned long long)g_pq_read, (unsigned long long)g_pq_done, g_pq_inflight);
-          +    CHECK("ticket 1 has not completed", g_pq_inflight == 2);
-          +    reuse_case(drawable(), gate, 1, 4, 2, 1);
-          +    int bad = bad_pixels(first.texture, 50, 150); printf("ticket 1 drawable: %d of 64 pixels wrong\n", bad);
-          +    CHECK("ticket 1 shows its own picture", bad == 0);
-          +
-          +    // One frame per tick, nothing dropped: tickets 5, 6 and 7 on allocators 2, 0 and 1, then 8 on allocator 2 again with three presents in flight
-          +    hold_gpu(gate, 2);
-          +    present_enqueue(&a, 1. / 60, NULL, 0); id<CAMetalDrawable> fifth = tick();
-          +    present_enqueue(&b, 1. / 60, NULL, 0); tick();
-          +    present_enqueue(&b, 1. / 60, NULL, 0); tick();
-          +    present_enqueue(&c, 1. / 60, left_half, 0);
-          +    printf("one per tick: read %llu, done %llu, in flight %d, dropped %llu\n", (unsigned long long)g_pq_read, (unsigned long long)g_pq_done, g_pq_inflight, (unsigned long long)g_link_dropped);
-          +    CHECK("tickets 5-7 have not completed", g_pq_inflight == 3 && g_link_dropped == 1);
-          +    reuse_case(drawable(), gate, 2, 8, 3, 5);
-          +    CHECK("no frame dropped after ticket 2", g_link_dropped == 1);
-          +    bad = bad_pixels(fifth.texture, 50, 150); printf("ticket 5 drawable: %d of 64 pixels wrong\n", bad);
-          +    CHECK("ticket 5 shows its own picture", bad == 0);
-          +    CHECK("no GPU error", !mtl_gpu_halted());
-          +    printf("present allocators: %d checks, %d failed\n", checks, failed); return failed != 0;
-          +} }
           diff --git a/graphics/nvn/tests/t_nvn_warm_runtime.m b/graphics/nvn/tests/t_nvn_warm_runtime.m
           new file mode 100644
           index 00000000..a95d272a
@@ -618,66 +224,6 @@ jobs:
           +    printf("PASS runtime-only %s: fallback loaded, stale fingerprint rejected, GPU output 7, hits %llu / compiled %llu / written %llu\n", argv[1], (unsigned long long)g_par_hits, (unsigned long long)g_par_misses, (unsigned long long)g_par_written);
           +    return 0;
           +} }
-          diff --git a/graphics/nvn/tests/test_present_alloc_probe.py b/graphics/nvn/tests/test_present_alloc_probe.py
-          new file mode 100644
-          index 00000000..2ec2c6a6
-          --- /dev/null
-          +++ b/graphics/nvn/tests/test_present_alloc_probe.py
-          @@ -0,0 +1,54 @@
-          +# SPDX-License-Identifier: Apache-2.0
-          +# Copyright 2026 S2Arm contributors
-          +"""Negative controls for the real production statements, with a portable C compiler."""
-          +import os
-          +import pathlib
-          +import subprocess
-          +import sys
-          +import tempfile
-          +import unittest
-          +
-          +ROOT = pathlib.Path(__file__).resolve().parents[3]
-          +PROBE = ROOT / 'graphics/nvn/tests/present_alloc_probe.py'
-          +SOURCE = ROOT / 'graphics/nvn/gfx/nvn/nvn_mtl.m'
-          +
-          +
-          +class PresentAccounting(unittest.TestCase):
-          +    def run_source(self, source):
-          +        with tempfile.TemporaryDirectory() as tmp:
-          +            path = pathlib.Path(tmp) / 'nvn_mtl.m'
-          +            path.write_text(source, encoding='utf-8')
-          +            return subprocess.run([sys.executable, str(PROBE), '--cc', os.environ.get('CC', 'cc'), '--source', str(path)],
-          +                                  capture_output=True, text=True, timeout=30)
-          +
-          +    def test_production(self):
-          +        run = self.run_source(SOURCE.read_text(encoding='utf-8'))
-          +        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-          +        self.assertIn('9 checks, 0 failures', run.stdout)
-          +
-          +    def test_old_global_wait_reproduces(self):
-          +        source = SOURCE.read_text(encoding='utf-8').replace(
-          +            'while (g_present_alloc_done[alloc_i] < g_present_alloc_fence[alloc_i])',
-          +            'while (g_pq_done < g_present_alloc_fence[alloc_i])')
-          +        run = self.run_source(source)
-          +        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
-          +        self.assertIn('FAIL dropped-ticket', run.stdout)
-          +        self.assertIn('FAIL contiguous-tickets', run.stdout)
-          +
-          +    def test_missing_feedback_blocks_reuse(self):
-          +        source = SOURCE.read_text(encoding='utf-8').replace(
-          +            'if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket;', '')
-          +        run = self.run_source(source)
-          +        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
-          +        self.assertIn('FAIL own-feedback', run.stdout)
-          +
-          +    def test_wrong_slot_feedback_rejected(self):
-          +        source = SOURCE.read_text(encoding='utf-8').replace(
-          +            'g_present_alloc_done[alloc_i] = ticket;', 'g_present_alloc_done[(alloc_i + 1) % 3] = ticket;')
-          +        run = self.run_source(source)
-          +        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
-          +        self.assertIn('FAIL other-slot-feedback', run.stdout)
-          +
-          +
-          +if __name__ == '__main__':
-          +    unittest.main()
           diff --git a/graphics/nvn/tests/test_warm_paths_probe.py b/graphics/nvn/tests/test_warm_paths_probe.py
           new file mode 100644
           index 00000000..6d03fcbb
@@ -1973,33 +1519,6 @@ jobs:
           +	$(CC) $(CFLAGS) $(NATIVE_INC) -DS2A_UNIT_TEST -pthread -o $(BUILD)/tests/t_fps_compensated runtime/tests/t_fps_compensated.c runtime/src/fps.c
           +	$(BUILD)/tests/t_fps_compensated runtime/fps/cd57b23fa4bbad65.tsv runtime/fps/de0b6ac4efc1dda7.tsv
           +TEST_TARGETS += native-test-fps_compensated
-          diff --git a/runtime/tests/mk/nvn_present_alloc.mk b/runtime/tests/mk/nvn_present_alloc.mk
-          new file mode 100644
-          index 00000000..6f56320b
-          --- /dev/null
-          +++ b/runtime/tests/mk/nvn_present_alloc.mk
-          @@ -0,0 +1,21 @@
-          +# SPDX-License-Identifier: Apache-2.0
-          +# Copyright 2026 S2Arm contributors
-          +NATIVE_TEST_OWN += nvn_present_alloc
-          +.PHONY: native-test-nvn_present_accounting
-          +native-test-nvn_present_accounting:
-          +	python3 graphics/nvn/tests/present_alloc_probe.py --cc "$(CC)"
-          +TEST_TARGETS += native-test-nvn_present_accounting
-          +ifeq ($(S2A_UNAME),Darwin)
-          +$(BUILD)/tests/t_nvn_present_alloc: graphics/nvn/tests/t_nvn_present_alloc.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
-          +	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
-          +	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \
-          +	  -o $@ graphics/nvn/tests/t_nvn_present_alloc.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN) \
-          +	  -Wl,-rpath,@executable_path/nvn/widen $(NVN_TEST_WEAK) \
-          +	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
-          +	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
-          +.PHONY: native-test-nvn_present_alloc
-          +native-test-nvn_present_alloc: $(BUILD)/tests/t_nvn_present_alloc
-          +	NXGAL_BE=mtl4-test MTL_DEBUG_LAYER=1 timeout 60 $(BUILD)/tests/t_nvn_present_alloc
-          +	NXGAL_BE=mtl3 MTL_DEBUG_LAYER=1 timeout 60 $(BUILD)/tests/t_nvn_present_alloc
-          +TEST_TARGETS += native-test-nvn_present_alloc
-          +endif
           diff --git a/runtime/tests/mk/nvn_warm_runtime.mk b/runtime/tests/mk/nvn_warm_runtime.mk
           new file mode 100644
           index 00000000..7f853708
@@ -2796,128 +2315,961 @@ jobs:
           +
           +if __name__ == '__main__':
           +    unittest.main()
-          diff --git a/tools/metal4_test_workflow.py b/tools/metal4_test_workflow.py
-          new file mode 100644
-          index 00000000..b8a6b081
-          --- /dev/null
-          +++ b/tools/metal4_test_workflow.py
-          @@ -0,0 +1,103 @@
-          +#!/usr/bin/env python3
-          +# SPDX-License-Identifier: Apache-2.0
-          +# Copyright 2026 S2Arm contributors
-          +"""Generate the isolated Metal 4 workflow from the existing daily workflow.
-          +
-          +Run after git add: the embedded patch and tree hash both describe the index.
-          +The output is kept outside this source tree to avoid a self-referencing hash.
-          +"""
-          +import argparse
-          +import pathlib
-          +import re
-          +import subprocess
-          +
-          +ROOT = pathlib.Path(__file__).resolve().parents[1]
-          +BASE = '3ddf11c00202745867391069873419d89e7c72e4'
-          +ARTIFACT = 'S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag'
-          +
-          +
-          +def replace_once(text, old, new):
-          +    if text.count(old) != 1:
-          +        raise ValueError(f'Expected one template occurrence: {old[:120]}')
-          +    return text.replace(old, new, 1)
-          +
-          +
-          +def git(*args):
-          +    return subprocess.check_output(['git', '-c', 'core.quotepath=false', *args], cwd=ROOT).decode('utf-8').strip()
-          +
-          +
-          +def main():
-          +    ap = argparse.ArgumentParser(description=__doc__)
-          +    ap.add_argument('--template', type=pathlib.Path, required=True)
-          +    ap.add_argument('--output', type=pathlib.Path, required=True)
-          +    args = ap.parse_args()
-          +    if args.output.resolve().is_relative_to(ROOT):
-          +        raise ValueError('Workflow output must be outside the source tree')
-          +    tree = git('write-tree')
-          +    patch = git('diff', '--cached', '--binary', BASE, '--') + '\n'
-          +    y = args.template.read_text(encoding='utf-8')
-          +    opening = '          cat > "$RUNNER_TEMP/s2arm-2x.patch" <<\'S2ARM_2X_PATCH\'\n'
-          +    closing = '          S2ARM_2X_PATCH\n'
-          +    y, count = re.subn(r'^          git add -- .+$', '          git add -A', y, count=1, flags=re.MULTILINE)
-          +    if count != 1:
-          +        raise ValueError('Missing source snapshot staging step')
-          +    y, count = re.subn(r'          test "\$tree" = "[0-9a-f]{40}"', f'          test "$tree" = "{tree}"', y, count=1)
-          +    if count != 1:
-          +        raise ValueError('Missing source tree guard')
-          +    y = replace_once(y, 'name: S2Arm 0.4.3 Shell 2x PSOFix LocalDiag AirPlaySpeed (macOS)',
-          +                     'name: S2Arm 0.4.3 Metal4 Test LocalDiag (macOS)')
-          +    y = replace_once(y, "branches: ['codex/s2arm-043-custom']", "branches: ['test/metal4-present-completion']")
-          +    y = replace_once(y, 'group: s2arm-shell-043-daily', 'group: s2arm-shell-043-metal4-test')
-          +    y = y.replace('S2Arm-0.4.3-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed', ARTIFACT)
-          +    y = replace_once(y, 'Apply PSO and local diagnostics fixes; check Foundation regression',
-          +                     'Apply private fixes and Metal4 experiment; check Foundation regression')
-          +    y = replace_once(y, "export GIT_AUTHOR_DATE='2026-11-16T08:00:00Z' GIT_COMMITTER_DATE='2026-11-16T08:00:00Z'",
-          +                     "export GIT_AUTHOR_DATE='2026-11-17T08:00:00Z' GIT_COMMITTER_DATE='2026-11-17T08:00:00Z'")
-          +    y = replace_once(y, '-m \'S2Arm 0.4.3 official render scaling with prewarm, local diagnostics, external pacing and compensated timing; upstream ',
-          +                     '-m \'S2Arm 0.4.3 private Metal4 allocator completion experiment, existing daily fixes preserved; upstream ')
-          +    marker = '      - name: Verify local diagnostics export routes and baseline negative control\n'
-          +    step = '''      - name: Verify present lifetime accounting and experimental backend selection
-          +        working-directory: source
-          +        run: |
-          +          set -euo pipefail
-          +          logs="$RUNNER_TEMP/s2arm-output/logs"
-          +          python3 graphics/nvn/tests/present_alloc_probe.py --cc clang --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/present-negative.log"
-          +          CC=clang python3 -B -m unittest discover -s graphics/nvn/tests -p test_present_alloc_probe.py 2>&1 | tee "$logs/present-accounting.log"
-          +          "$S2A_GMAKE" CC=clang native-test-nvn_be 2>&1 | tee "$logs/metal4-selection.log"
-          +          echo 'Portable present accounting: 9 checks plus 3 mutation controls PASS. Backend selection: 19 cases PASS. GPU and iPhone verification pending.' > "$logs/metal4-test-status.txt"
-          +
-          +'''
-          +    y = replace_once(y, marker, step + marker)
-          +    y = replace_once(y, 'build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"',
-          +                     'build/tests/t_nvn_warm_runtime build/tests/t_nvn_present_alloc 2>&1 | tee "$logs/rscale-native-build.log"')
-          +    y = replace_once(y, 'native-test-nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-run.log"',
-          +                     'native-test-nvn_warm_runtime native-test-nvn_present_alloc 2>&1 | tee "$logs/rscale-native-run.log"\n'
-          +                     '            echo "Real present allocator GPU regression: PASS (Metal 3 and Metal 4). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"')
-          +    y = replace_once(y, '            echo \'::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.\'',
-          +                     '            echo \'::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.\'\n'
-          +                     '            echo "Real present allocator GPU regression: COMPILED; execution SKIPPED (runner GPU capabilities). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"')
-          +    y = replace_once(y, '          cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"',
-          +                     '          cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"\n'
-          +                     '          cat "$logs/metal4-test-status.txt" >> "$GITHUB_STEP_SUMMARY"')
-          +    y = replace_once(y, '            echo "Custom build: S2Arm 0.4.3 official render scaling + prewarm fix2 + local diagnostics + slow-display routing + BOTW timing; default 1x"',
-          +                     '            echo "Custom build: S2Arm 0.4.3 Metal4 experiment + existing private daily fixes; default iOS 26 backend stays Metal3"\n'
-          +                     '            echo "Opt-in: NXGAL_BE=mtl4-test; rollback: NXGAL_BE=mtl3. This does not prove iOS compositor issue #311 is fixed."\n'
-          +                     '            cat "$output/logs/metal4-test-status.txt"')
-          +    y = replace_once(y, '          cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"',
-          +                     '          cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"\n'
-          +                     '          cp "$output/logs/metal4-test-status.txt" "$output/artifact/metal4-test-status.txt"')
-          +    y = replace_once(y, 'shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch ',
-          +                     'shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch metal4-test-status.txt ')
-          +    y = replace_once(y, '          echo \'Shell build completed. Download ',
-          +                     '          echo \'EXPERIMENTAL: do not replace the daily installation. Opt in with NXGAL_BE=mtl4-test only after assembling this Shell; remove it or set mtl3 to roll back. #311 and real FPS remain unverified.\' >> "$GITHUB_STEP_SUMMARY"\n'
-          +                     '          echo \'Shell build completed. Download ')
-          +    # Embed last: this generator is itself in the patch and contains template
-          +    # strings. Earlier replacement would accidentally edit its quoted source.
-          +    begin, end = y.index(opening) + len(opening), y.index(closing)
-          +    y = y[:begin] + ''.join('          ' + line + '\n' for line in patch.splitlines()) + y[end:]
-          +    args.output.write_text(y, encoding='utf-8', newline='\n')
-          +    print(f'Workflow: {args.output}\nSource tree: {tree}\nArtifact: {ARTIFACT}')
-          +
-          +
-          +if __name__ == '__main__':
-          +    main()
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -A
+          git add -- 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/es.lproj/S2ArmHost.strings ios/l10n/fr.lproj/S2ArmHost.strings ios/l10n/ja.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings pack/stage_inputs/shell.tsv runtime/fps/cd57b23fa4bbad65.tsv runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/diag_localization_test.py tests/fps_botw_190_test.py
           tree="$(git write-tree)"
-          test "$tree" = "19afe5264d199d7db339bddd881d76cd6767c7ef"
+          test "$tree" = "58605645d81acd7db9d8c72cdf31183a03f38478"
+          # Adapted Metal 3 cache optimizations; daily source remains the checked base.
+          cat > "$RUNNER_TEMP/s2arm-metal3-opt.patch" <<'S2ARM_METAL3_OPT_PATCH'
+          diff --git a/docs/metal3-cache-experiment.md b/docs/metal3-cache-experiment.md
+          new file mode 100644
+          index 0000000..f4ea137
+          --- /dev/null
+          +++ b/docs/metal3-cache-experiment.md
+          @@ -0,0 +1,26 @@
+          +# Metal 3 缓存实验版
+          +
+          +这是基于 0.4.3 日常源码的独立实验分支 `perf/metal3-vconv-texture-cache`。保留 Metal 3、本地诊断导出、PSO 预热、AirPlay 和既有游戏修复。不启用之前失败的 Metal 4 实验。
+          +
+          +## 两个独立开关
+          +
+          +| 环境变量 | 实验版默认值 | 用途 |
+          +| --- | --- | --- |
+          +| `DM_NVN_VCONV_KEEP` | `1` | 保留稳定顶点的 CPU 格式转换结果，避免跨提交重复转换 |
+          +| `DM_NVN_TEX_SERIAL_CACHE` | `1` | 已知单个纹理变化时，只失效关联的纹理 ID 视图；信息不足时全局失效 |
+          +
+          +任一变量设为 `0` 可单独关闭对应优化。顶点缓存的在用条目预算为 64 MiB，另有固定大小的元数据；仍被 GPU 使用的退役缓冲会延迟释放，瞬时内存可能超过在用预算。缓存只接收至少 4096 个顶点的稳定输入；动态、稀疏或无法可靠跟踪的输入走保守路径。
+          +
+          +## 真机对比
+          +
+          +1. 编译并组装本分支运行壳，再安装实验 IPA；只复制 env 到旧 IPA 不能添加这些优化。两项修改均在运行壳，现有游戏资源无需重新生成。
+          +2. 使用相同存档、视角和魔兽选中状态，保持 1X、掌机、原比例。首次进入场景的着色器预热结束后再比较。不要同时修改分辨率、60 帧补丁或其他设置。
+          +3. 先设两个开关均为 `0`，完全退出 LiveContainer 后重开，记录同一场景并导出本地诊断。
+          +4. 分别测试 `1/0`、`0/1`，最后 `1/1`。每次改 env 都完全退出 LiveContainer 后重开；每组记录约 60 秒，并分别导出诊断。
+          +5. 除帧率外，检查金色格子、角色、贴图是否正确，有无 GPU 错误、崩溃及持续内存增长。两项优化的收益应由这些同场景记录确定。
+          +
+          +回退时安装原来的 0.4.3 日常 IPA。实验工程和 CI 工作流使用独立目录/名称，不替换日常构建、游戏文件或存档。
+          +
+          +## 验证边界
+          +
+          +便携 C 测试和故意破坏关键判断的负对照可在 Windows 运行；它们不能证明 Objective-C、Metal 资源生命周期或 iPhone 游戏结果。CI 先强制编译真实 Metal 夹具，再根据 runner GPU 能力决定是否执行。能力不足的执行应标为 SKIPPED，不能写作通过。最终性能及画面正确性仍需真机验证。
+          diff --git a/docs/superpowers/plans/2026-11-17-metal3-cache.md b/docs/superpowers/plans/2026-11-17-metal3-cache.md
+          new file mode 100644
+          index 0000000..80ee8bf
+          --- /dev/null
+          +++ b/docs/superpowers/plans/2026-11-17-metal3-cache.md
+          @@ -0,0 +1,46 @@
+          +# Metal 3 vertex and texture cache optimization implementation plan
+          +
+          +> **For agentic workers:** Use superpowers:subagent-driven-development task by task. The user explicitly approved implementation of both previously researched candidates on a new branch.
+          +
+          +**Goal:** Reduce repeated CPU vertex conversion and unrelated texture view revalidation while preserving rendering and existing game resources.
+          +**Architecture:** Adapt the two pinned nxnative mechanisms to the S2Arm 0.4.3 daily baseline, in separate commits. Keep existing Metal 3 submission/lifetime handling, local diagnostics and all daily fixes.
+          +**Tech Stack:** C/Objective-C, Metal 3, Python tests, GitHub Actions macOS.
+          +**Spec:** This document records the approved scope and implementation choices from the conversation and Research/20261117-metal3-optimization/核对结果.txt outside the source tree.
+          +
+          +## Global Constraints
+          +- Base: 0c46f981710357dc4d1d0efe43c152a902ddbe16; branch perf/metal3-vconv-texture-cache.
+          +- No Metal 4 test changes, no change to resources, user saves, daily IPA, upload policy or game-specific behavior.
+          +- Independent switches: DM_NVN_VCONV_KEEP=0 disables persistent vertex reuse; DM_NVN_TEX_SERIAL_CACHE=0 restores global texture invalidation. Enabled by default in this experimental branch, with conservative fallback on unknown tracking state.
+          +- Vertex cache memory cap 64 MiB (phone-oriented choice); minimum 4096 vertices; idle keys bounded. Preserve existing nonpersistent conversion semantics and limit unless independently necessary.
+          +- CPU/GPU writes, sparse mappings, mapping destruction/replacement, dirty tracking failure and buffer lifetime must not produce stale data. Support Metal 3 address-to-buffer binding, not just Metal 4 gpuAddress.
+          +- Windows host tests are not Apple compilation or iPhone validation. CI must compile production code and genuine Metal tests; only runtime GPU capability gaps may skip GPU execution.
+          +- Each optimization independent commit, provenance, tests and rollback switch. No FPS claims without device measurements.
+          +
+          +## Review Focus
+          +- Recreated pool at same address or reused dirty slot invalidates cache even within same submission.
+          +- CPU write on shared edge page or whole protected page changes conversion; neighbor writes do not incorrectly destroy static cache.
+          +- Pending and in-flight GPU writers invalidate entries, retirement waits for GPU readers, binding resolves in Metal 3.
+          +- Sparse mapping change, unnoted serial bump, note overflow or missing reverse index conservatively invalidate texture views.
+          +- Multi-ID same serial, destruction/re-registration, view shape and packaged texture CPU dirtiness preserve existing semantics.
+          +
+          +### Task 1: Persistent vertex conversions
+          +**Files:** graphics/nvn/gfx/nvn/nvn_mtl.m; new focused .inc if useful; graphics/nvn/tests/t_nvn_vconv_keep.m; focused portable production-logic tests; runtime/tests/mk; pack/stage_inputs/shell.tsv only if needed for new production input closure.
+          +**Interfaces:** integrate vk_get, vk_gpu_write into vconv_bind/pend_add/sbw_note; reuse S2Arm dirty mapping generation and deferred Metal buffer retirement.
+          +- [ ] Write and run red/negative-control tests for reuse, source modifications, recreated mapping, unknown/GPU writes, disable, allocation/lifetime, memory/key bounds and format/zero padding outputs.
+          +- [ ] Adapt nxnative 81b21cb8528b7000de9e141ebba535d932f70ea4; review b65b9b0fc75ad151de099cbbf232b29e077acafc but use S2Arm mapping_generation if sufficient. Keep sources/license.
+          +- [ ] Add hit/miss/conversion/cache bytes counters in existing local diagnostic logs without per-draw logging. Check arithmetic overflow and allocation failure fallback.
+          +- [ ] Run feasible tests, save outputs, register Apple test target, commit only task files.
+          +
+          +### Task 2: Targeted texture serial invalidation
+          +**Files:** graphics/nvn/gfx/nvn/nvn_mtl.m; focused serial-cache helper/tests; runtime/tests/mk; source input closure if required.
+          +**Interfaces:** ser_note under g_smu records affected serial; ser_sync advances ID epoch for known notes and invalidates only matching registered IDs, fallback global for all uncertainty. Switch DM_NVN_TEX_SERIAL_CACHE.
+          +- [ ] Write and run red/negative-control tests for unrelated serial reuse, matching serial drop, duplicate IDs, overflow/unnoted bumps, sparse mappings and CPU writes.
+          +- [ ] Adapt nxnative 6fc342179f330e1f256a261b17b15f568018b24f to S2Arm's current serial table and view code; retain conservative sparse fallback rather than importing unrelated owner refactor.
+          +- [ ] Add compact diagnostics, run feasible tests, register Apple test target and commit separately.
+          +
+          +### Task 3: Build artifact and independent review
+          +**Files:** self-contained workflow copied from E:/project/S2ARM/s2arm-shell-0.4.3.yml; new name s2arm-shell-0.4.3-metal3-opt.yml, outside daily source.
+          +- [ ] Preserve daily patch and add exact branch delta with source identity hashes; output S2Arm-0.4.3-Shell-Metal3-Opt-LocalDiag.
+          +- [ ] Run portable regressions and negative controls; attempt graphics/contributor gates and record environment restrictions. Require new tests in Apple CI.
+          +- [ ] Review branch for CPU/GPU dirty invalidation and resource lifetime; fix important findings.
+          +- [ ] Verify YAML embedded patch recreates branch exactly, Python/bash syntax and stage closure. Supply full experimental env, workflow path and phone test steps. Do not overwrite daily artifacts.
+          diff --git a/docs/第三方依赖.md b/docs/第三方依赖.md
+          index 9db3884..90e9d5a 100644
+          --- a/docs/第三方依赖.md
+          +++ b/docs/第三方依赖.md
+          @@ -8,3 +8,11 @@
+           ### Linux Vulkan 测试容器
+           
+           `tests/vulkan/Dockerfile` 使用微软官方 .NET SDK 10.0.403 noble 多架构镜像（固定 manifest-list SHA-256），Ubuntu 固定快照提供 Mesa lavapipe、Khronos validation、shaderc/glslc、SPIRV-Tools、Vulkan loader/headers 与编译工具。来源、精确摘要、显式准备和许可边界见 [共享 Vulkan 环境](../tests/vulkan/README.md)。组件及其许可证保留在镜像/发行版包内，不复制第三方源码到仓库，不随门禁隐式下载。
+          +
+          +### NVN 顶点转换复用
+          +
+          +`graphics/nvn/gfx/nvn/nvn_mtl.m` 的顶点转换复用机制参考 nxnative 提交 `81b21cb8528b7000de9e141ebba535d932f70ea4`（MIT）；保留的许可见 [graphics/nvn/LICENSE](../graphics/nvn/LICENSE)。S2Arm 适配了 Metal 3 地址回查、映射代际及会话生命周期。
+          +
+          +### NVN 贴图序号缓存
+          +
+          +`graphics/nvn/gfx/nvn/nvn_mtl.m` 的定向贴图序号失效参考 nxnative 提交 `6fc342179f330e1f256a261b17b15f568018b24f`（MIT）；许可见 [graphics/nvn/LICENSE](../graphics/nvn/LICENSE)。S2Arm 适配现有反向索引与稀疏映射检查。
+          diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
+          index 266bc3a..27feb2c 100644
+          --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
+          +++ b/graphics/nvn/gfx/nvn/nvn_mtl.m
+          @@ -68,6 +68,8 @@ static inline uint64_t tex_slot_h(const uint64_t *tex, const uint64_t *img, unsi
+           }
+           static uint64_t c2_handle(int stage, unsigned b);   // the handle c2 holds at byte b (defined with the draw state, TEXA / SAMPA)
+           #include "nvn_hmap.h"
+          +#include "nvn_vconv_keep.h"
+          +#include "nvn_ser_cache.h"
+           #include "nvn_vbuf_read.h"   // the vertex streams a vertex shader fetches (bind_vbufs)
+           #include "../../host/dm.h"
+           #include "../../../../runtime/include/s2a_lowva.h"   // #357: unreferenced shared textures give memory back to the low-region ledger (alias_orph_evict)
+          @@ -1228,7 +1230,9 @@ static struct { uint64_t lo, n; uint32_t gen; uint8_t src; } g_sbw_memo[SBW_MEMO
+           //   "too large to keep" and marks the whole submission over (g_sbw_over), so every later indexed geometry draw waited for the GPU and left its geometry run
+           //   (11-06 Donkey Kong: compute shaders 80c1f2f388617e69 / 1cc137863bec3f11 / c3de3d90f81ac8e0 bind such buffers with 59–320 KB left in theirs)
+           static uint64_t sbw_to_end(void *mb, uint64_t mo) { uint64_t len = mb ? (uint64_t)[(__bridge id<MTLBuffer>)mb length] : 0; return len > mo ? len - mo : 0; }
+          +static void vk_gpu_write(uint64_t lo, uint64_t n);
+           static void sbw_note(uint64_t lo, uint64_t n, int src) {
+          +    if (src == SBW_GPU || src == SBW_REPORT) vk_gpu_write(lo, n);
+               unsigned m = (unsigned)(((lo ^ (n << 20)) * 0x9E3779B97F4A7C15ull) >> 58) & (SBW_MEMO - 1);
+               if (n && g_sbw_memo[m].gen == g_pend_gen && g_sbw_memo[m].lo == lo && g_sbw_memo[m].n == n && (g_sbw_memo[m].src & src) == src) return;
+               if (src == SBW_GPU) g_sbw_gen++;
+          @@ -1249,7 +1253,7 @@ static void pend_reset(void) { g_npend = g_pend_over = g_nupd = g_npnode = g_nwi
+           static void vc_gpu_write(uint64_t dst, uint64_t n);   // kept index ranges under the written range are not trusted again (ix_range)
+           static void gpw_clear(uint64_t lo, uint64_t n);   // guest bytes the GPU wrote into memory itself are current again (see gpw_mark)
+           static int pend_add(uint64_t dst, uint64_t n, int kind) {
+          -    vc_gpu_write(dst, n); gpw_clear(dst, n);
+          +    vk_gpu_write(dst, n); vc_gpu_write(dst, n); gpw_clear(dst, n);
+               if (g_pend_over) return -1;
+               uint64_t p0 = dst >> 12, p1 = (dst + (n ? n : 1) - 1) >> 12; int narrow = p1 - p0 < PEND_SPAN;
+               if (!pend_room(narrow ? (int)(p1 - p0 + 1) : 0)) { g_pend_over = 1; return -1; }
+          @@ -2710,6 +2714,16 @@ static nvn_hmap g_by_serial = {.klen = 8};     // Serial → MTLTexture / NvPkg
+           static pthread_mutex_t g_smu = PTHREAD_MUTEX_INITIALIZER;
+           // Serial table generation: +1 when entries are added / removed or a packaged texture is replaced. Downstream caches (texture views, programs) record the generation at fetch time; if it is unchanged they can be used directly without another table lookup
+           static _Atomic uint64_t g_ser_gen = 1;
+          +// Note only changes proven to affect exactly one serial. All other bumps remain global.
+          +enum { SER_NOTES = 64 };
+          +static pthread_mutex_t g_snote_mu = PTHREAD_MUTEX_INITIALIZER;
+          +static uint64_t g_snote[SER_NOTES]; static unsigned g_nsnote; static int g_snote_over;
+          +static void ser_note(uint64_t serial) {
+          +    pthread_mutex_lock(&g_snote_mu);
+          +    if (g_nsnote < SER_NOTES) g_snote[g_nsnote++] = serial; else g_snote_over = 1;
+          +    g_ser_gen++;
+          +    pthread_mutex_unlock(&g_snote_mu);
+          +}
+           // Textures shared by storage (non-packaged): key = memory pool + offset + texture description. An NVN texture object is only a descriptor; an object rebuilt over the same storage with the same description is the same texture;
+           // SMBW rebuilds its transient render targets on new objects every frame and never Finalizes them, so building one per serial leaked about 13 MB of GPU memory per frame. Textures here are kept resident by the sharing table,
+           // and when the serial table replaces / deletes them it only drops its reference (defer_obj_unref), never removing them from the residency set. Entries go when their pool is finalized (nvn_be_alias_drop_pool)
+          @@ -2917,8 +2931,8 @@ static void alias_orphan_pass(void) {
+               free(cache); free(wr);
+           }
+           static __unsafe_unretained id serial_get(uint64_t k) { pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); pthread_mutex_unlock(&g_smu); return o; }
+          -static void serial_put(uint64_t k, id o) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (alias_has(old)) defer_obj_unref(old); else defer_obj_release(old); } hm_put_id(&g_by_serial, &k, o); g_ser_gen++; pthread_mutex_unlock(&g_smu); }
+          -static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (alias_has(old)) defer_obj_unref(old); else defer_obj_release(old); hm_del_id(&g_by_serial, &k); g_ser_gen++; } pthread_mutex_unlock(&g_smu); }   // nothing to drop: the texture ID caches stay valid
+          +static void serial_put(uint64_t k, id o) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (alias_has(old)) defer_obj_unref(old); else defer_obj_release(old); } hm_put_id(&g_by_serial, &k, o); ser_note(k); pthread_mutex_unlock(&g_smu); }
+          +static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (alias_has(old)) defer_obj_unref(old); else defer_obj_release(old); hm_del_id(&g_by_serial, &k); ser_note(k); } pthread_mutex_unlock(&g_smu); }   // nothing to drop: the texture ID caches stay valid
+           // Texture serials owned by a live NVN texture object (TextureInitialize until Finalize or re-initialization, hle_nvn.c). Command records and texture pool registrations snapshot the
+           // texture object (tex_snap in hle_nvn.c, nvn_be_reg_tex), so replay can resolve a texture the game has already finalized: Breath of the Wild records each frame's transient render targets
+           // (the HUD captures, the 640x360 half-resolution buffers) and finalizes their objects before it submits. Those serials went back into g_by_serial and stayed there for good, as no second
+          @@ -2954,10 +2968,10 @@ static void tex_put_locked(uint64_t k, id o) {   // caller owns g_smu
+               if (old) { if (old != o) obj_drop(old); }
+               else if (m == &g_ghost) {
+                   uint64_t *slot = &g_ghost_ring[g_ghost_next++ % NGHOST];
+          -        if (*slot) { id ev = hm_get_id(&g_ghost, slot); if (ev && ev != hm_get_id(&g_ghost_active, slot)) obj_drop(ev); hm_del_id(&g_ghost, slot); }   // still used by this submission: dropped when it ends
+          +        if (*slot) { id ev = hm_get_id(&g_ghost, slot); if (ev && ev != hm_get_id(&g_ghost_active, slot)) obj_drop(ev); hm_del_id(&g_ghost, slot); ser_note(*slot); }   // still used by this submission: dropped when it ends
+                   *slot = k; g_ghost_puts++;
+               }
+          -    hm_put_id(m, &k, o); g_ser_gen++;
+          +    hm_put_id(m, &k, o); ser_note(k);
+               if (m == &g_ghost && (active || (g_cb && on_sub_thread()))) hm_put_id(&g_ghost_active, &k, o);
+           }
+           static void tex_put(uint64_t k, id o) {
+          @@ -4687,7 +4701,7 @@ void nvn_be_tex_cpu_written(const tex_t *t) {
+                   static int n; if (n++ < 16) MLOG("CPU-written texture ser=%llu %ux%ux%u format %#x target %d levels %u: uploaded / re-uploaded like a swizzled texture", (unsigned long long)serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels);
+               }
+               pthread_mutex_unlock(&g_cpu_tex_mu);
+          -    if (added) { pthread_mutex_lock(&g_smu); g_ser_gen++; pthread_mutex_unlock(&g_smu); }   // the texture IDs that resolve to it take the slow path, which now treats it as packaged (tex_by_id view_pkg)
+          +    if (added) { pthread_mutex_lock(&g_smu); ser_note(serial); pthread_mutex_unlock(&g_smu); }   // the texture IDs that resolve to it take the slow path, which now treats it as packaged (tex_by_id view_pkg)
+           }
+           static int tex_cpu_written(uint64_t serial) {
+               pthread_mutex_lock(&g_cpu_tex_mu); int r = g_cpu_tex.n && nvn_hm_get(&g_cpu_tex, &serial); pthread_mutex_unlock(&g_cpu_tex_mu);
+          @@ -4997,7 +5011,7 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
+                       // A co-located CPU write during replay must not replace a target that earlier draws wrote.
+                       // Keep its dirty stamp for the next submission / WaitSync. Outside an open command buffer,
+                       // direct CPU resolution must still see updates, including after a completed submission.
+          -            if (g_cb && g_pkg_epoch && pk->check_epoch == g_pkg_epoch) return pk->view ? pk->view : pk->tex;
+          +            if (g_cb && g_pkg_epoch && pk->check_epoch == g_pkg_epoch && (!pk->sparse || pk->vseen == nvn_sparse_gen())) return pk->view ? pk->view : pk->tex;
+                       pk->check_epoch = g_pkg_epoch;
+                       uint64_t now = nvn_dirty_now();
+                       int tracked = pk->span != NULL;   // kept from the upload: a texture's pool stays registered while the texture lives
+          @@ -7170,6 +7184,38 @@ static treg_t *g_treg; static int g_ntreg;
+           //   nvn_be_reg_tex, nvn_be_unreg_tex_range). A finalized texture's IDs are found by its serial (treg_sweep_gone, alias_dead_views): those passes walked the whole registry, about
+           //   33,000 IDs in Ocarina of Time, at every submission where a texture had been finalized (11-07 E1 on device: 11% of its submit CPU, 39% of Donkey Kong's). Under g_rmu
+           static nvn_hmap g_treg_ser = {.klen = 8};
+          +// Under g_rmu. Notes are consumed atomically with the generation snapshot.
+          +static uint64_t g_treg_ep = 1, g_ser_synced = 1, g_ser_sparse;
+          +static uint64_t g_ser_targeted, g_ser_global;
+          +static int ser_enabled(void) { const char *e = getenv("DM_NVN_TEX_SERIAL_CACHE"); return !e || strcmp(e, "0"); }
+          +static void ser_sync(uint64_t sparse) {
+          +    uint64_t notes[SER_NOTES]; unsigned n; int over; uint64_t sg;
+          +    pthread_mutex_lock(&g_snote_mu);
+          +    sg = g_ser_gen; n = g_nsnote; over = g_snote_over;
+          +    memcpy(notes, g_snote, n * sizeof *notes); g_nsnote = 0; g_snote_over = 0;
+          +    pthread_mutex_unlock(&g_snote_mu);
+          +    int global = ser_cache_global(g_ser_synced, sg, n, over, g_ser_sparse, sparse, ser_enabled());
+          +    if (!global) for (unsigned i = 0; i < n && !global; i++) {
+          +        int h = (int)(uintptr_t)nvn_hm_get(&g_treg_ser, &notes[i]); int walked = 0;
+          +        if (!h) { global = 1; break; } // absent or missing reverse index: conservative
+          +        while (h) {
+          +            if (h < 1 || h > g_ntreg || ++walked > g_ntreg || !g_treg[h - 1].ok || g_treg[h - 1].t.serial != notes[i]) { global = 1; break; }
+          +            g_treg[h - 1].view_ser = 0; h = g_treg[h - 1].ser_next;
+          +        }
+          +    }
+          +    if (global) {
+          +        if (++g_treg_ep == 0) { for (int i = 0; i < g_ntreg; i++) g_treg[i].view_ser = 0; g_treg_ep = 1; }
+          +        g_ser_global++;
+          +    } else g_ser_targeted += n;
+          +    if ((g_ser_global + g_ser_targeted) && !((g_ser_global + g_ser_targeted) % 4096))
+          +        MLOG("[diag] texture serial cache targeted=%llu global=%llu", (unsigned long long)g_ser_targeted, (unsigned long long)g_ser_global);
+          +    g_ser_synced = sg; g_ser_sparse = sparse;
+          +}
+          +static inline uint64_t treg_ep(void) {
+          +    uint64_t sparse = nvn_sparse_gen();
+          +    if (g_ser_gen != g_ser_synced || sparse != g_ser_sparse) ser_sync(sparse);
+          +    return g_treg_ep;
+          +}
+           static uint64_t g_treg_ser_walk;   // IDs looked at by serial (treg_sweep_gone, alias_dead_views): the work grows with the finalized textures' IDs, not with the registry (t_nvn_treg_sweep)
+           static void treg_ser_link(int id_) {
+               treg_t *r = &g_treg[id_]; uint64_t s = r->t.serial; int h = (int)(uintptr_t)nvn_hm_get(&g_treg_ser, &s);
+          @@ -7555,7 +7601,7 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
+               if (tid == 0 && !g_tid0_reg) { if (!g_stat_tex_null++) MLOG("texture ID 0 read with nothing registered there (a slot left at the zero handle): the empty descriptor, reads 0 (frame %llu, first case)", (unsigned long long)atomic_load(&g_cur_frame)); return nil; }
+               if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "texture ID %d not registered", tid); return nil; }
+               treg_t *rp = &g_treg[tid];
+          -    uint64_t sg = g_ser_gen, dg = nvn_dirty_now();   // Take the generations first and then look up: if a change happens in between, the next time must take the slow path
+          +    uint64_t sg = treg_ep(), dg = nvn_dirty_now();   // Take the generations first and then look up: if a change happens in between, the next time must take the slow path
+               // A CPU-written texture checked in this check period (g_pkg_epoch: the submission, split at waits on another queue) is not checked again: every draw of a submission runs on the GPU
+               //   after the submit and the replay runs inside the game's submit call, so one look at guest memory per period is what the GPU reads (11-02 Breath of the Wild outdoors: textures
+               //   sharing pages with data rewritten every frame were re-protected and re-hashed per draw, about 64 times a frame, each followed by a write fault on the game thread; 249k
+          @@ -7611,7 +7657,7 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
+                   }
+                   if (r.v.set_format && tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf) && !(base.usage & MTLTextureUsagePixelFormatView)) {
+                       base = tex_upgrade_pfv(&rp->t, base, (MTLPixelFormat)pf);
+          -            sg = g_ser_gen;
+          +            sg = treg_ep();
+                   }
+                   tex_extent extent = tex_extent_at(&r.t, base, r.v.set_levels ? r.v.base_level : 0, r.v.set_layers ? r.v.min_layer : 0);
+                   NSUInteger l0 = extent.level, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : extent.levels;
+          @@ -7644,7 +7690,8 @@ static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
+           }
+           // Hot-path object fetch: if the table entry is valid, return the table-held pointer directly (without ARC retain / autorelease), otherwise take the slow path to build / validate. Caller holds g_rmu.
+           static inline __attribute__((always_inline)) void *tex_fast(int tid) {
+          -    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) return g_treg[tid].view;
+          +    uint64_t ep = treg_ep();
+          +    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == ep && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) return g_treg[tid].view;
+               return (__bridge void *)tex_by_id(tid);
+           }
+           // The texture type the shader declares differs from the one the descriptor gives: use a compatible view. Maxwell sample instructions carry their own dimension, and a non-array instruction reading a 2D array texture reads layer 0;
+          @@ -7883,7 +7930,8 @@ static int img_atomic_prepare(NvShader *sh, int st) {
+               return ok;
+           }
+           static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void **out) {
+          -    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == g_ser_gen && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
+          +    uint64_t ep = treg_ep();
+          +    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok && g_treg[tid].view && g_treg[tid].view_ser == ep && (!g_treg[tid].view_pkg || g_treg[tid].view_dirty == nvn_dirty_now() || g_treg[tid].view_ep == g_pkg_epoch)) { if (out) *out = g_treg[tid].view; return g_treg[tid].view_rid; }
+               id<MTLTexture> t = tex_by_id(tid); if (out) *out = (__bridge void *)t; return t ? t.gpuResourceID._impl : 0;
+           }
+           // Buffer textures of a format the host expands (nvn_fmt_expanded: three-component RGB8 / 16 / 32, *_UI2F / *_I2F, RGB10A2 signed): Metal has no such texture buffer format,
+          @@ -8546,15 +8594,108 @@ static int vc_draw_range(const p_draw *dw, const p_draw_idx *di, int64_t *lo, in
+               uint32_t mn, mx; if (!di || !ix_range(di, &mn, &mx)) return 0;
+               *lo = (int64_t)mn + di->base_vertex; *hi = (int64_t)mx + di->base_vertex; return 1;
+           }
+          +// Full source pages are write-protected; only shared edge bytes are snapshotted.
+          +// Mapping generation is checked even on same-submission hits before trusting a span.
+          +// Based on nxnative 81b21cb8528b7000de9e141ebba535d932f70ea4 (MIT).
+          +enum { VK_SLOTS = 256 };
+          +static const uint64_t VK_LIMIT = 64ull << 20;
+          +typedef struct { vk_state state; uint64_t guest, n, bytes, used, plo, pn, head, tail, stamp, seen; const uint8_t *src; const void *span; uint8_t *copy; void *buf; uint64_t gpu; } vk_ent;
+          +static vk_ent g_vk[VK_SLOTS];
+          +static uint64_t g_vk_bytes, g_vk_hit, g_vk_miss, g_vk_made; static unsigned g_vk_count;
+          +static vk_probe g_vk_probe[VK_SLOTS];
+          +static int vk_enabled(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_VCONV_KEEP"); v = !e || strcmp(e, "0"); } return v; }
+          +static void vk_drop(vk_ent *e) {
+          +    if (!e->state.valid) return;
+          +    id<MTLBuffer> b = (__bridge_transfer id<MTLBuffer>)e->buf;
+          +    defer_obj_release(b); free(e->copy); g_vk_bytes -= e->bytes; g_vk_count--; memset(e, 0, sizeof *e);
+          +}
+          +static void vk_gpu_write(uint64_t lo, uint64_t n) {
+          +    if (!g_vk_count) return;
+          +    if (n && n <= UINT64_MAX - lo) { uint64_t end = nvn_ga2ca(lo + n - 1), start = nvn_ga2ca(lo);
+          +        if (start <= UINT64_MAX - (n - 1) && end == start + n - 1) lo = start; else n = 0;
+          +    }
+          +    for (int i = 0; i < VK_SLOTS; i++) if (g_vk[i].state.valid && vk_overlap(g_vk[i].guest, g_vk[i].n, lo, n)) { vk_backoff(g_vk_probe, VK_SLOTS, g_vk[i].state.key, g_vk[i].state.map, g_sub_serial); vk_drop(&g_vk[i]); }
+          +}
+          +static void vk_session_clear(void) {
+          +    for (int i = 0; i < VK_SLOTS; i++) vk_drop(&g_vk[i]);
+          +    memset(g_vk_probe, 0, sizeof g_vk_probe); g_vk_hit = g_vk_miss = g_vk_made = 0;
+          +}
+          +static int vk_edges_same(const vk_ent *e) {
+          +    return vk_edges_equal(e->copy, e->src, e->n, e->head, e->tail);
+          +}
+          +// Returns the payload address, with a real prefix for Metal 3's buffer lookup.
+          +static uint64_t vk_get(vk_key key, uint64_t guest, const uint8_t *src, uint64_t n) {
+          +    uint64_t prefix = key.v0 <= UINT64_MAX / 16 ? key.v0 * 16 : UINT64_MAX;
+          +    if (!vk_enabled() || !vk_size_ok(key.nv, prefix, VK_LIMIT) || n > VK_LIMIT || !key.stride || !src ||
+          +        guest > UINT64_MAX - n || (uint64_t)(uintptr_t)src > UINT64_MAX - n || nvn_sparse_gen() || nvn_dirty_tracking_unreliable() || nvn_dirty_chunk_pages() ||
+          +        g_sbw_over || pend_hits(guest, n) ||
+          +        sbw_hits(guest, guest + n) || gw_live(guest, guest + n) || ifw_hits(guest, guest + n)) return 0;
+          +    uint64_t map = nvn_dirty_mapping_generation();
+          +    const void *span = nvn_dirty_span(src, (size_t)n);
+          +    if (!span || map != nvn_dirty_mapping_generation()) return 0;
+          +    for (int i = 0; i < VK_SLOTS; i++) { vk_ent *e = &g_vk[i];
+          +        if (!e->state.valid) continue;
+          +        if (e->state.map != map || (g_sub_serial >= e->used && g_sub_serial - e->used > 600)) { vk_drop(e); continue; }
+          +        if (vk_match(&e->state, &key, map, 0)) {
+          +            uint64_t now = nvn_dirty_now();
+          +            int pages = e->pn && now != e->seen && nvn_dirty_since_span(e->span, (const void *)(uintptr_t)e->plo, (size_t)e->pn, e->stamp);
+          +            if (e->src == src && e->guest == guest && e->n == n && !pages && vk_edges_same(e) && map == nvn_dirty_mapping_generation() && !nvn_dirty_tracking_unreliable()) {
+          +                e->seen = now; e->used = g_sub_serial; g_vk_hit++; return e->gpu;
+          +            }
+          +            vk_backoff(g_vk_probe, VK_SLOTS, e->state.key, e->state.map, g_sub_serial); vk_drop(e); break;
+          +        }
+          +    }
+          +    g_vk_miss++;
+          +    if (!vk_admit(g_vk_probe, VK_SLOTS, key, map, src, n, g_sub_serial)) return 0;
+          +    uint64_t len = prefix + key.nv * 16;
+          +    uint64_t plo, pn, head, tail;
+          +    if (!vk_page_parts((uint64_t)(uintptr_t)src, n, nvn_dirty_page_size(), &plo, &pn, &head, &tail)) return 0;
+          +    uint64_t edges = head + tail, copy_bytes = edges ? edges : 1;
+          +    if (copy_bytes > VK_LIMIT - len || len > g_dev.maxBufferLength || g_vk_bytes > VK_LIMIT - len - copy_bytes) return 0;
+          +    int slot = -1; for (int i = 0; i < VK_SLOTS; i++) if (!g_vk[i].state.valid) { slot = i; break; }
+          +    if (slot < 0) { slot = 0; for (int i = 1; i < VK_SLOTS; i++) if (g_vk[i].used < g_vk[slot].used) slot = i; vk_drop(&g_vk[slot]); }
+          +    uint8_t *copy = malloc((size_t)copy_bytes); if (!copy) return 0;
+          +    id<MTLBuffer> b = [g_dev newBufferWithLength:(NSUInteger)len options:MTLResourceStorageModeShared];
+          +    if (!b || !b.contents) { free(copy); return 0; }
+          +    uint64_t stamp = nvn_dirty_now();
+          +    if (pn) nvn_dirty_protect((const void *)(uintptr_t)plo, (size_t)pn);
+          +    if (head) memcpy(copy, src, (size_t)head);
+          +    if (tail) memcpy(copy + head, src + n - tail, (size_t)tail);
+          +    if (prefix) memset(b.contents, 0, (size_t)prefix);
+          +    vconv_fill((int)key.fmt, (uint64_t)(uintptr_t)src, key.stride, key.nv, (float *)((uint8_t *)b.contents + prefix));
+          +    if ((pn && nvn_dirty_since_span(span, (const void *)(uintptr_t)plo, (size_t)pn, stamp)) ||
+          +        (head && memcmp(copy, src, (size_t)head)) || (tail && memcmp(copy + head, src + n - tail, (size_t)tail)) ||
+          +        map != nvn_dirty_mapping_generation() || nvn_dirty_tracking_unreliable()) { free(copy); return 0; }
+          +    res_add(b);
+          +    if (g_m3) { id<MTLBuffer> found = nil; NSUInteger at = 0;
+          +        if (!m3_buf_at(b.gpuAddress, &found, &at) || found != b || at) { defer_obj_release(b); free(copy); return 0; }
+          +    }
+          +    vk_ent *e = &g_vk[slot]; e->state = (vk_state){key, map, 0, 1}; e->guest = guest; e->n = n; e->bytes = len + copy_bytes; e->used = g_sub_serial; e->src = src; e->copy = copy; e->span = span; e->plo = plo; e->pn = pn; e->head = head; e->tail = tail; e->stamp = e->seen = stamp; e->buf = (__bridge_retained void *)b; e->gpu = b.gpuAddress + prefix;
+          +    g_vk_bytes += e->bytes; g_vk_count++; g_vk_made++; return e->gpu;
+          +}
+           static void vc_stat(void) {   // every 3600 submissions
+               if (g_sub_serial - g_vc_stat < 3600) return;
+               if (g_vc_stat) MLOG("vertex conversion: %.0f vertices per submission (the bound ranges: %.0f), %u index ranges kept%s; shadow-input libraries loaded %llu (not usable %llu), pipelines built with them %llu", g_vc_conv / 3600.0, g_vc_whole / 3600.0, g_ir.n,
+                   vc_check() ? [NSString stringWithFormat:@"; checked %llu, %llu differed", (unsigned long long)g_vc_checks, (unsigned long long)g_vc_bad].UTF8String : "",
+                   (unsigned long long)g_vin_loaded, (unsigned long long)g_vin_failed, (unsigned long long)g_vin_psos);
+          +    if (g_vc_stat) MLOG("vertex keep: hits %llu misses %llu conversions %llu bytes %llu", (unsigned long long)g_vk_hit, (unsigned long long)g_vk_miss, (unsigned long long)g_vk_made, (unsigned long long)g_vk_bytes);
+               g_vc_stat = g_sub_serial; g_vc_conv = g_vc_whole = 0;
+           }
+           // Per submission, one conversion per (range, format, layout): KTGL draws the same mesh several times a frame (depth, shadow, G-buffer)
+          -static struct { uint64_t addr, size, serial, v0, nv; uint32_t fmt, off, stride; uint64_t gpu; } g_vconv[64]; static int g_vconv_next;
+          +static struct { uint64_t addr, size, serial, v0, nv; uint32_t fmt, off, stride; uint64_t gpu, map, stamp, n; const uint8_t *src; const void *span; } g_vconv[64]; static int g_vconv_next;
+          +static int vconv_frame_safe(uint64_t guest, uint64_t n) {
+          +    return n && guest <= UINT64_MAX - n && !nvn_sparse_gen() && !nvn_dirty_chunk_pages() && !nvn_dirty_tracking_unreliable() && !g_sbw_over &&
+          +           !pend_hits(guest, n) && !sbw_hits(guest, guest + n) && !gw_live(guest, guest + n) && !ifw_hits(guest, guest + n);
+          +}
+          +static uint64_t vconv_frame_get(vk_key k, uint64_t guest, const uint8_t *src, uint64_t n) {
+          +    if (!vconv_frame_safe(guest, n)) return 0;
+          +    uint64_t map = nvn_dirty_mapping_generation();
+          +    for (int i = 0; i < 64; i++) if (g_vconv[i].serial == g_arena_gen && g_vconv[i].addr == k.addr && g_vconv[i].size == k.size &&
+          +        g_vconv[i].v0 == k.v0 && g_vconv[i].nv == k.nv && g_vconv[i].fmt == k.fmt && g_vconv[i].off == k.off && g_vconv[i].stride == k.stride &&
+          +        g_vconv[i].map == map && g_vconv[i].src == src && g_vconv[i].n == n && g_vconv[i].span &&
+          +        !nvn_dirty_since_span(g_vconv[i].span, src, (size_t)n, g_vconv[i].stamp) && map == nvn_dirty_mapping_generation() && !nvn_dirty_tracking_unreliable()) return g_vconv[i].gpu;
+          +    return 0;
+          +}
+           static void vconv_bind(id<MTL4RenderCommandEncoder> en, NvShader *vs, int tf, const p_draw *dw, const p_draw_idx *di) {   // tf: a transform feedback capture (no shadow inputs)
+               const nvn_refl *rf = &vs->rf; int slot = VCONV_SLOT0, vc = vc_on(), rk = -1, on = vin_on(vs, NULL, tf); int64_t rlo = 0, rhi = 0;   // rk: the draw's vertex range is known (-1 = not looked up yet)
+               vc_stat();
+          @@ -8568,17 +8709,28 @@ static void vconv_bind(id<MTL4RenderCommandEncoder> en, NvShader *vs, int tf, co
+                       int64_t a0 = rlo < 0 ? 0 : rlo, a1 = rhi < (int64_t)nv - 1 ? rhi : (int64_t)nv - 1;
+                       if (rk && a0 <= a1) { v0 = (uint64_t)a0; nv = (uint64_t)(a1 - a0 + 1); }
+                   }
+          -        for (int i = 0; i < 64 && !gpu; i++) if (g_vconv[i].serial == g_arena_gen && g_vconv[i].addr == addr && g_vconv[i].size == size && g_vconv[i].v0 == v0 && g_vconv[i].nv == nv && g_vconv[i].fmt == (uint32_t)f && g_vconv[i].off == off && g_vconv[i].stride == stride) gpu = g_vconv[i].gpu;
+          +        for (int i = 0; !vk_enabled() && i < 64 && !gpu; i++) if (g_vconv[i].serial == g_arena_gen && g_vconv[i].addr == addr && g_vconv[i].size == size && g_vconv[i].v0 == v0 && g_vconv[i].nv == nv && g_vconv[i].fmt == (uint32_t)f && g_vconv[i].off == off && g_vconv[i].stride == stride) gpu = g_vconv[i].gpu;
+                   if (!gpu && addr) {
+                       // 源地址先按常规顶点绑定同一个查池函数换成宿主可读指针（含虚拟池页表影子）：查不到的地址不读（11-06 FC26 真机开赛 SIGSEGV：
+                       //   512 MB 虚拟池没占到宿主地址，GPU 地址 0xc0…换不回宿主地址，这里原先直接当指针读）；与常规路径（红 162，读零）一致，这个槽不绑
+                       void *sb = NULL; uint64_t so = 0, sg = 0, sav = 0; const uint8_t *src = NULL;
+          -            if (nv && nv * 16 <= (4u << 20) && gpu_addr_want(addr + off + v0 * stride, 1, (nv - 1) * stride + es, &sb, &so, &sg, &sav)) src = (const uint8_t *)((__bridge id<MTLBuffer>)sb).contents + so;
+          -            if (nv && nv * 16 <= (4u << 20) && !src) RED_ONCE(174, "vertex attribute conversion: stream %d address %#llx is in no memory pool: not read, the attribute is left unbound (first case)", st, (unsigned long long)(addr + off));
+          -            else if (nv && nv * 16 <= (4u << 20)) {
+          +            if (nv && nv <= (4u << 20) / 16 && v0 <= (UINT64_MAX - off) / (stride ? stride : 1) && addr <= UINT64_MAX - off - v0 * stride && (nv - 1) <= (UINT64_MAX - es) / (stride ? stride : 1) && gpu_addr_want(addr + off + v0 * stride, 1, (nv - 1) * stride + es, &sb, &so, &sg, &sav)) src = (const uint8_t *)((__bridge id<MTLBuffer>)sb).contents + so;
+          +            if (nv && nv <= (4u << 20) / 16 && !src) RED_ONCE(174, "vertex attribute conversion: stream %d address %#llx is in no memory pool: not read, the attribute is left unbound (first case)", st, (unsigned long long)(addr + off));
+          +            else if (nv && nv <= (4u << 20) / 16) {
+          +                uint64_t sn = (nv - 1) * stride + es, guest = nvn_ga2ca(addr + off + v0 * stride);
+          +                vk_key k = {addr, size, v0, nv, (uint32_t)f, off, stride};
+          +                if (vk_enabled() && sav >= sn) { gpu = vconv_frame_get(k, guest, src, sn); if (!gpu) gpu = vk_get(k, guest, src, sn); }
+          +                if (gpu) { g_vc_whole += whole; enc_r_vbuf(en, (NSUInteger)slot, gpu - v0 * 16); slot++; continue; }
+          +                uint64_t fm = nvn_dirty_mapping_generation(), fst = nvn_dirty_now(); const void *fsp = NULL;
+          +                if (vk_enabled() && sav >= sn && (uint64_t)(uintptr_t)src <= UINT64_MAX - sn && vconv_frame_safe(guest, sn)) {
+          +                    fsp = nvn_dirty_span(src, (size_t)sn);
+          +                    if (fsp && fm == nvn_dirty_mapping_generation()) nvn_dirty_protect(src, (size_t)sn); else fsp = NULL;
+          +                }
+                           id<MTLBuffer> b; size_t o = arena_alloc_origin((size_t)nv * 16, v0 * 16, &b); vconv_fill(f, (uint64_t)(uintptr_t)src, stride, nv, (float *)((uint8_t *)b.contents + o)); gpu = b.gpuAddress + o;
+                           g_vc_conv += nv; g_vc_whole += whole;
+                           int c = g_vconv_next++ % 64; g_vconv[c].addr = addr; g_vconv[c].size = size; g_vconv[c].v0 = v0; g_vconv[c].nv = nv; g_vconv[c].serial = g_arena_gen; g_vconv[c].fmt = (uint32_t)f; g_vconv[c].off = off; g_vconv[c].stride = stride; g_vconv[c].gpu = gpu;
+          +                g_vconv[c].src = src; g_vconv[c].n = sn; g_vconv[c].map = fm; g_vconv[c].stamp = fst; g_vconv[c].span = fsp;
+          +                if (vk_enabled() && (!fsp || nvn_dirty_tracking_unreliable() || fm != nvn_dirty_mapping_generation() || nvn_dirty_since_span(fsp, src, (size_t)sn, fst))) g_vconv[c].serial = 0;
+                           int ib, is;
+                           if (vconv_i2f(f, &ib, &is)) { static int once; if (!once++) MLOG("vertex attribute format %#x (integers read as floats, which Metal has no vertex format for): converted on the CPU at replay and bound separately", f); }
+                           else if (rf->v[v].ct == NVN_CT_FLOAT) RED_ONCE(99, "vertex attribute format %#x (8 / 16-bit integer) feeds a float input: the 32-bit register values Maxwell's fetch makes are bound as float bit patterns, converted on the CPU at replay", f);
+          @@ -10185,13 +10337,13 @@ static void pool_dirty(int samp, int id_) { if (atomic_load_explicit(&g_ptab_any
+           // g_seen_todo) and put into the tables. The IDs shaders read are looked up again when a texture changed somewhere (g_ser_gen: storage swapped or taken over, a shared texture replaced
+           // while its old one stays alive elsewhere, a target first written) or guest memory did (a CPU-written texture is checked against guest writes only when it is looked up, tex_by_id
+           // view_pkg): what nothing retires or registers still reaches what shaders read within a submission. Shaders read a few hundred of the tens of thousands of IDs
+          -static uint64_t g_seen_dirty = ~0ull, g_seen_ser = ~0ull;
+          +static uint64_t g_seen_dirty = ~0ull, g_seen_ser = ~0ull, g_seen_sparse = ~0ull;
+           static void pool_seen_scan(void) {
+               if (!g_seen_buf || g_seen_sub == g_sub_serial) return;
+               g_seen_sub = g_sub_serial;
+               pool_walk_frame();
+               const uint32_t *w = (const uint32_t *)g_seen_buf.contents; unsigned words = MIN((unsigned)g_ntreg / 32 + 1, (unsigned)POOL_SEEN_WORDS);
+          -    uint64_t dg = nvn_dirty_now(), sg = g_ser_gen; int recheck = dg != g_seen_dirty || sg != g_seen_ser; g_seen_dirty = dg; g_seen_ser = sg;
+          +    uint64_t dg = nvn_dirty_now(), sg = g_ser_gen, sp = nvn_sparse_gen(); int recheck = dg != g_seen_dirty || sg != g_seen_ser || sp != g_seen_sparse; g_seen_dirty = dg; g_seen_ser = sg; g_seen_sparse = sp;
+               for (unsigned i = 0; i < words; i++) {
+                   uint32_t fresh = w[i] & ~g_seen_done[i];
+                   if (fresh) { g_seen_done[i] |= fresh; g_seen_todo[i] |= fresh; }
+          @@ -11370,10 +11522,18 @@ static int g_defer_ab = -1, g_defer_ab_on;
+           //   the open render pass and has the GPU copy the bytes the 2D-row view reads into the frame arena now (see tba_ent). Returns 1 when it made a copy. Leaves the copy encoder open
+           //   (the caller ends it once, after all of a draw's copies)
+           static int tba_copy(int tid, int exact) {   // exact < 0: read as a texture buffer (1D), the copy is its elements (#798)
+          -    if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok || g_tba_n >= TBA_MAX) return 0;
+          -    void *tv = NULL; (void)tex_fast_rid(tid, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+          +    if (g_tba_n >= TBA_MAX) return 0;
+          +    // The lookup can sync serial notes and a concurrent registration can grow
+          +    // the table. Keep a strong texture and a descriptor snapshot after unlock.
+          +    tex_t snapshot; id<MTLTexture> t = nil;
+          +    pthread_mutex_lock(&g_rmu);
+          +    if (tid >= 0 && tid < g_ntreg && g_treg[tid].ok) {
+          +        void *tv = NULL; (void)tex_fast_rid(tid, &tv);
+          +        t = (__bridge id<MTLTexture>)tv; snapshot = g_treg[tid].t;
+          +    }
+          +    pthread_mutex_unlock(&g_rmu);
+               if (!t || t.textureType != MTLTextureTypeTextureBuffer || !t.buffer || !(t.bufferOffset % linear_align(t.pixelFormat))) return 0;
+          -    const tex_t *tt = &g_treg[tid].t; uint32_t w, h, row; int bw, bh, bpb = nvn_fmt_bpb(tt->d.format, &bw, &bh);
+          +    const tex_t *tt = &snapshot; uint32_t w, h, row; int bw, bh, bpb = nvn_fmt_bpb(tt->d.format, &bw, &bh);
+               if ((exact < 0 ? !bpb : !tbuf_geom(tt, t, exact, &w, &h, &row)) || tba_find(tt->serial, t)) return 0;
+               uint64_t avail = t.buffer.length > t.bufferOffset ? t.buffer.length - t.bufferOffset : 0, want = exact < 0 ? (uint64_t)t.width * (uint64_t)bpb : (uint64_t)row * h;
+               size_t len = (size_t)(want < avail ? want : avail);
+          @@ -12859,7 +13019,7 @@ static int fz_p2_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di, uint8_
+                       if (lv || sl || MAX(R.rt.color[j]->d.width, 1u) != g_pass.cw || MAX(R.rt.color[j]->d.height, 1u) != g_pass.ch) { PD("F %llu not provable: the attachment is not level 0 layer 0, or its size differs", g_stat_pass); return 0; }
+                       {   // The sampled view must also be exactly the attachment itself (previously only the attachment being level 0 layer 0 was checked, not the view bound by the shader -- when the same texture is sampled through a view of level k / layer k / a changed format,
+                           // the proof would still hold, the sampling would be changed to read on-tile level 0 / the original format, and the picture would be wrong). The view's starting level / layer must be 0 and its format must equal the attachment's actual format, otherwise do not merge
+          -                int tid_ = (int)(h & 0xfffff); void *tv_ = NULL; if (tid_) tex_fast_rid(tid_, &tv_); __unsafe_unretained id<MTLTexture> tv = (__bridge id<MTLTexture>)tv_;
+          +                int tid_ = (int)(h & 0xfffff); void *tv_ = NULL; if (tid_) { pthread_mutex_lock(&g_rmu); tex_fast_rid(tid_, &tv_); pthread_mutex_unlock(&g_rmu); } __unsafe_unretained id<MTLTexture> tv = (__bridge id<MTLTexture>)tv_;
+                           uint32_t apf_ = tv.parentTexture ? (uint32_t)tv.parentTexture.pixelFormat : (uint32_t)tv.pixelFormat; uint8_t swz_[4];
+                           if (R.rt.has_cview[j] && R.rt.cview[j].set_format && !(nvn_fmt_to_mtl(R.rt.cview[j].format, &apf_, swz_) && apf_)) apf_ = 0;   // The attachment is attached through a format-changing view: take that format; if unrecognized, do not merge
+                           MTLPixelFormat apf = (MTLPixelFormat)apf_; MTLTextureSwizzleChannels tsw = tv.swizzle;   // a read of the tile takes no channel mapping either (alpha 1 of an RGBX attachment, tex_by_id)
+          diff --git a/graphics/nvn/gfx/nvn/nvn_ser_cache.h b/graphics/nvn/gfx/nvn/nvn_ser_cache.h
+          new file mode 100644
+          index 0000000..8dafbe2
+          --- /dev/null
+          +++ b/graphics/nvn/gfx/nvn/nvn_ser_cache.h
+          @@ -0,0 +1,9 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +#ifndef S2A_NVN_SER_CACHE_H
+          +#define S2A_NVN_SER_CACHE_H
+          +#include <stdint.h>
+          +static inline int ser_cache_global(uint64_t before, uint64_t now, unsigned notes, int overflow, uint64_t sparse_before, uint64_t sparse_now, int enabled) {
+          +    return !enabled || overflow || now < before || now - before != notes || sparse_now != sparse_before || sparse_now != 0;
+          +}
+          +#endif
+          diff --git a/graphics/nvn/gfx/nvn/nvn_session.inc b/graphics/nvn/gfx/nvn/nvn_session.inc
+          index a90094e..0b0edae 100644
+          --- a/graphics/nvn/gfx/nvn/nvn_session.inc
+          +++ b/graphics/nvn/gfx/nvn/nvn_session.inc
+          @@ -90,6 +90,7 @@ int nvn_be_shutdown_session(void) {
+               // consumes the old prefetch handoff before its pipeline maps are cleared.
+               warm_claim();
+               pool_session_reset();   // before the owners below: its pins would keep what they remove resident
+          +    vk_session_clear();   // GPU is idle; the deferred queue is drained at the end of shutdown
+               // No callbacks can touch these objects now. Drop descriptors first, then
+               // texture/program owners, then no-copy memory-pool buffers.
+               for (int i = 0; i < g_ntreg; i++) {
+          diff --git a/graphics/nvn/gfx/nvn/nvn_vconv_keep.h b/graphics/nvn/gfx/nvn/nvn_vconv_keep.h
+          new file mode 100644
+          index 0000000..af97e2f
+          --- /dev/null
+          +++ b/graphics/nvn/gfx/nvn/nvn_vconv_keep.h
+          @@ -0,0 +1,54 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +#pragma once
+          +#include <stdint.h>
+          +#include <string.h>
+          +typedef struct { uint64_t addr, size, v0, nv; uint32_t fmt, off, stride; } vk_key;
+          +typedef struct { vk_key key; uint64_t map, dirty; int valid; } vk_state;
+          +static inline int vk_match(const vk_state *s, const vk_key *k, uint64_t map, uint64_t dirty) {
+          +    return s->valid && s->map == map && s->dirty == dirty && s->key.addr == k->addr && s->key.size == k->size && s->key.v0 == k->v0 && s->key.nv == k->nv && s->key.fmt == k->fmt && s->key.off == k->off && s->key.stride == k->stride;
+          +}
+          +static inline int vk_overlap(uint64_t a, uint64_t n, uint64_t b, uint64_t m) {
+          +    return !m || !n || n > UINT64_MAX - a || m > UINT64_MAX - b || (a < b + m && b < a + n);
+          +}
+          +static inline int vk_size_ok(uint64_t n, uint64_t prefix, uint64_t cap) {
+          +    return n >= 4096 && n <= (UINT64_MAX - prefix) / 16 && prefix + n * 16 <= cap;
+          +}
+          +
+          +static inline int vk_page_parts(uint64_t a, uint64_t n, uint64_t pg, uint64_t *plo, uint64_t *pn, uint64_t *head, uint64_t *tail) {
+          +    if (!n || !pg || (pg & (pg - 1)) || a > UINT64_MAX - n || a > UINT64_MAX - (pg - 1)) return 0;
+          +    *plo = (a + pg - 1) & ~(pg - 1); uint64_t phi = (a + n) & ~(pg - 1);
+          +    *pn = phi > *plo ? phi - *plo : 0;
+          +    *head = *pn ? *plo - a : n; *tail = *pn ? a + n - phi : 0;
+          +    return 1;
+          +}
+          +static inline int vk_edges_equal(const uint8_t *copy, const uint8_t *src, uint64_t n, uint64_t head, uint64_t tail) {
+          +    return (!head || !memcmp(copy, src, (size_t)head)) && (!tail || !memcmp(copy + head, src + n - tail, (size_t)tail));
+          +}
+          +
+          +typedef struct { vk_key key; uint64_t map, sig, seen, retry; unsigned strikes; int valid; } vk_probe;
+          +static inline uint64_t vk_signature(const uint8_t *src, uint64_t n) {
+          +    uint64_t h = n; for (unsigned i = 0; i < 64; i++) { uint64_t at = n > 8 ? ((n - 8) / 63) * i : 0, w = 0; memcpy(&w, src + at, (size_t)(n < 8 ? n : 8)); h = (h ^ w) * 0x9e3779b97f4a7c15ull; }
+          +    return h;
+          +}
+          +static inline vk_probe *vk_probe_find(vk_probe *ps, unsigned count, vk_key key, uint64_t map) {
+          +    vk_state state = {key, map, 0, 1};
+          +    for (unsigned i = 0; i < count; i++) if (ps[i].valid && vk_match(&state, &ps[i].key, ps[i].map, 0)) return &ps[i];
+          +    return NULL;
+          +}
+          +static inline void vk_backoff(vk_probe *ps, unsigned count, vk_key key, uint64_t map, uint64_t sub) {
+          +    vk_probe *p = vk_probe_find(ps, count, key, map); if (!p) return;
+          +    if (p->strikes < 10) p->strikes++;
+          +    p->retry = sub + (16ull << p->strikes);
+          +}
+          +static inline int vk_admit(vk_probe *ps, unsigned count, vk_key key, uint64_t map, const uint8_t *src, uint64_t n, uint64_t sub) {
+          +    if (!count || !n) return 0;
+          +    uint64_t sig = vk_signature(src, n); vk_probe *p = vk_probe_find(ps, count, key, map);
+          +    if (!p) {
+          +        unsigned slot = 0; for (unsigned i = 0; i < count; i++) { if (!ps[i].valid) { slot = i; break; } if (ps[i].seen < ps[slot].seen) slot = i; }
+          +        ps[slot] = (vk_probe){key, map, sig, sub, sub + 1, 0, 1}; return 0;
+          +    }
+          +    int changed = p->sig != sig; p->sig = sig; p->seen = sub;
+          +    if (changed && sub >= p->retry) { vk_backoff(ps, count, key, map, sub); return 0; }
+          +    return sub >= p->retry && !changed;
+          +}
+          diff --git a/graphics/nvn/tests/metal3_cache_regression.py b/graphics/nvn/tests/metal3_cache_regression.py
+          new file mode 100644
+          index 0000000..3bc21b4
+          --- /dev/null
+          +++ b/graphics/nvn/tests/metal3_cache_regression.py
+          @@ -0,0 +1,25 @@
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Run both portable production-logic suites and their negative controls.
+          +
+          +This verifies CPU cache predicates; native Metal fixtures are separate mandatory
+          +compile targets in the experimental workflow and require a capable GPU to run.
+          +"""
+          +import argparse
+          +from pathlib import Path
+          +import subprocess
+          +import sys
+          +
+          +
+          +def main():
+          +    parser = argparse.ArgumentParser(description=__doc__)
+          +    parser.add_argument("--cc", default="cc")
+          +    args = parser.parse_args()
+          +    directory = Path(__file__).resolve().parent
+          +    for name in ("vconv_keep_portable_test.py", "ser_cache_portable_test.py"):
+          +        subprocess.run([sys.executable, "-B", str(directory / name), "--cc", args.cc], check=True)
+          +    print("PASS both portable cache suites; Apple compilation/GPU execution are separate checks", flush=True)
+          +
+          +
+          +if __name__ == "__main__":
+          +    main()
+          diff --git a/graphics/nvn/tests/ser_cache_portable_test.py b/graphics/nvn/tests/ser_cache_portable_test.py
+          new file mode 100644
+          index 0000000..a5c9c79
+          --- /dev/null
+          +++ b/graphics/nvn/tests/ser_cache_portable_test.py
+          @@ -0,0 +1,35 @@
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +import argparse
+          +import pathlib
+          +import subprocess
+          +import tempfile
+          +ROOT = pathlib.Path(__file__).resolve().parents[3]
+          +HEADER = ROOT / 'graphics/nvn/gfx/nvn/nvn_ser_cache.h'
+          +TEST = ROOT / 'graphics/nvn/tests/t_nvn_ser_cache_logic.c'
+          +def run(cc, source):
+          +    with tempfile.TemporaryDirectory(prefix='s2-ser-') as d:
+          +        root = pathlib.Path(d)
+          +        h = root / 'gfx/nvn/nvn_ser_cache.h'; h.parent.mkdir(parents=True); h.write_text(source, encoding='utf-8')
+          +        t = root / 'tests/t_nvn_ser_cache_logic.c'; t.parent.mkdir(); t.write_text(TEST.read_text(encoding='utf-8'), encoding='utf-8')
+          +        exe = root / 'test.exe'
+          +        subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror', str(t), '-o', str(exe)], check=True)
+          +        return subprocess.run([str(exe)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+          +def main():
+          +    p = argparse.ArgumentParser(); p.add_argument('--cc', default='cc'); a = p.parse_args()
+          +    s = HEADER.read_text(encoding='utf-8')
+          +    assert run(a.cc, s) == 0
+          +    print('PASS production serial-cache fallback predicate')
+          +    controls = {
+          +        'unnoted bump': ('now - before != notes', '(now - before != notes && 0)'),
+          +        'overflow': ('|| overflow ||', '|| (overflow && 0) ||'),
+          +        'sparse change': ('sparse_now != sparse_before', '(sparse_now != sparse_before && 0)'),
+          +        'sparse active': ('sparse_now != 0', '(sparse_now != 0 && 0)'),
+          +        'disabled': ('!enabled', '(!enabled && 0)'),
+          +        'wrap': ('now < before', '(now < before && 0)'),
+          +    }
+          +    for name, (old, new) in controls.items():
+          +        assert s.count(old) == 1
+          +        assert run(a.cc, s.replace(old, new, 1)) != 0, name
+          +        print('PASS negative control:', name)
+          +if __name__ == '__main__': main()
+          diff --git a/graphics/nvn/tests/t_nvn_ser_cache.m b/graphics/nvn/tests/t_nvn_ser_cache.m
+          new file mode 100644
+          index 0000000..46c99b9
+          --- /dev/null
+          +++ b/graphics/nvn/tests/t_nvn_ser_cache.m
+          @@ -0,0 +1,67 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +// Exercise production serial notes, registry locking and Metal texture lookups.
+          +#include "../gfx/nvn/nvn_mtl.m"
+          +#include "s2a_t_result.h"
+          +#include <time.h>
+          +#include <errno.h>
+          +typedef struct { pthread_mutex_t mu; pthread_cond_t cv; int started, done, result; } tba_lock_test;
+          +static void *tba_lock_worker(void *arg) { @autoreleasepool {
+          +    tba_lock_test *x = arg;
+          +    pthread_mutex_lock(&x->mu); x->started = 1; pthread_cond_signal(&x->cv); pthread_mutex_unlock(&x->mu);
+          +    int result = tba_copy(0, -1);
+          +    pthread_mutex_lock(&x->mu); x->result = result; x->done = 1; pthread_cond_signal(&x->cv); pthread_mutex_unlock(&x->mu);
+          +    return NULL;
+          +} }
+          +static int fails, checks;
+          +#define CHECK(x) do { checks++; if (!(x)) { fails++; fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #x); } } while (0)
+          +static tex_t make_tex(uint64_t serial) { tex_t t = {0}; t.magic = MAGIC('T','E','X',0); t.serial = serial; t.d.width = t.d.height = 4; return t; }
+          +int main(void) { @autoreleasepool {
+          +    setenv("DM_PRESENT_LINK", "0", 1); setenv("NXGAL_BE", "mtl3", 1); mtl_init(); CHECK(g_m3);
+          +    tex_t a = make_tex(101), b = make_tex(102), c = make_tex(103);
+          +    nvn_be_reg_tex(0, &a, NULL); nvn_be_reg_tex(1, &a, NULL); nvn_be_reg_tex(2, &b, NULL);
+          +    pthread_mutex_lock(&g_rmu); uint64_t ep = treg_ep();
+          +    g_treg[0].view_ser = g_treg[1].view_ser = g_treg[2].view_ser = ep;
+          +    pthread_mutex_unlock(&g_rmu);
+          +    pthread_mutex_lock(&g_smu); ser_note(101); pthread_mutex_unlock(&g_smu);
+          +    pthread_mutex_lock(&g_rmu); CHECK(treg_ep() == ep); CHECK(!g_treg[0].view_ser && !g_treg[1].view_ser); CHECK(g_treg[2].view_ser == ep); pthread_mutex_unlock(&g_rmu);
+          +    nvn_be_reg_tex(1, &c, NULL);
+          +    pthread_mutex_lock(&g_rmu); ep = treg_ep(); g_treg[0].view_ser = g_treg[1].view_ser = g_treg[2].view_ser = ep; pthread_mutex_unlock(&g_rmu);
+          +    nvn_be_tex_cpu_written(&a);
+          +    pthread_mutex_lock(&g_rmu); CHECK(treg_ep() == ep); CHECK(!g_treg[0].view_ser && g_treg[1].view_ser == ep && g_treg[2].view_ser == ep);
+          +    g_ser_gen++; CHECK(treg_ep() != ep); ep = g_treg_ep;
+          +    for (int i = 0; i < SER_NOTES + 1; i++) ser_note(101);
+          +    CHECK(treg_ep() != ep); ep = g_treg_ep;
+          +    ser_sync(1); CHECK(g_treg_ep != ep); ep = g_treg_ep; ser_sync(2); CHECK(g_treg_ep != ep);
+          +    pthread_mutex_unlock(&g_rmu);
+          +    // Resolve actual Metal objects through the production ID fast paths.
+          +    a.d.target = b.d.target = NVN_TEXTURE_TARGET_2D;
+          +    a.d.format = b.d.format = NVN_FORMAT_RGBA8;
+          +    a.d.depth = b.d.depth = 1; a.d.levels = b.d.levels = 1;
+          +    nvn_be_reg_tex(0, &a, NULL); nvn_be_reg_tex(1, &a, NULL); nvn_be_reg_tex(2, &b, NULL);
+          +    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:4 height:4 mipmapped:NO];
+          +    id<MTLTexture> a0 = [g_dev newTextureWithDescriptor:d], a1 = [g_dev newTextureWithDescriptor:d], b0 = [g_dev newTextureWithDescriptor:d];
+          +    CHECK(a0 && a1 && b0);
+          +    serial_put(101, a0); serial_put(102, b0);
+          +    pthread_mutex_lock(&g_rmu); void *p0 = tex_fast(0), *p1 = tex_fast(1), *p2 = tex_fast(2); pthread_mutex_unlock(&g_rmu);
+          +    CHECK(p0 == (__bridge void *)a0 && p1 == p0 && p2 == (__bridge void *)b0);
+          +    serial_put(101, a1);
+          +    pthread_mutex_lock(&g_rmu); void *out = NULL; uint64_t rid = tex_fast_rid(0, &out); p1 = tex_fast(1); p2 = tex_fast(2); pthread_mutex_unlock(&g_rmu);
+          +    CHECK(rid && out == (__bridge void *)a1 && p1 == out && p2 == (__bridge void *)b0);
+          +    // A real tba_copy must wait for the same registry lock as a writer, even
+          +    // when its view resolves to a non-buffer texture and no blit is needed.
+          +    tba_lock_test x = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER };
+          +    pthread_t thread; pthread_mutex_lock(&g_rmu);
+          +    int created = pthread_create(&thread, NULL, tba_lock_worker, &x) == 0; CHECK(created);
+          +    if (created) {
+          +        pthread_mutex_lock(&x.mu); while (!x.started) pthread_cond_wait(&x.cv, &x.mu);
+          +        struct timespec until; clock_gettime(CLOCK_REALTIME, &until); until.tv_sec++;
+          +        int wait_result = 0; while (!x.done && wait_result == 0) wait_result = pthread_cond_timedwait(&x.cv, &x.mu, &until);
+          +        CHECK(!x.done && wait_result == ETIMEDOUT); pthread_mutex_unlock(&x.mu);
+          +        pthread_mutex_unlock(&g_rmu); pthread_join(thread, NULL);
+          +        CHECK(x.done && x.result == 0);
+          +    } else pthread_mutex_unlock(&g_rmu);
+          +    pthread_cond_destroy(&x.cv); pthread_mutex_destroy(&x.mu);
+          +    printf("serial cache: %d checks, %d failures\n", checks, fails);
+          +    return S2A_T_RESULT("t_nvn_ser_cache", fails);
+          +} }
+          diff --git a/graphics/nvn/tests/t_nvn_ser_cache_logic.c b/graphics/nvn/tests/t_nvn_ser_cache_logic.c
+          new file mode 100644
+          index 0000000..2a9f9d5
+          --- /dev/null
+          +++ b/graphics/nvn/tests/t_nvn_ser_cache_logic.c
+          @@ -0,0 +1,16 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +#include <assert.h>
+          +#include <stdint.h>
+          +#include "../gfx/nvn/nvn_ser_cache.h"
+          +int main(void) {
+          +    assert(ser_cache_global(1, 2, 1, 0, 0, 0, 1) == 0);
+          +    assert(ser_cache_global(1, 2, 0, 0, 0, 0, 1) == 1);
+          +    assert(ser_cache_global(1, 2, 1, 1, 0, 0, 1) == 1);
+          +    assert(ser_cache_global(1, 2, 1, 0, 0, 1, 1) == 1);
+          +    assert(ser_cache_global(1, 2, 1, 0, 1, 1, 1) == 1);
+          +    assert(ser_cache_global(1, 2, 1, 0, 1, 0, 1) == 1);
+          +    assert(ser_cache_global(1, 2, 1, 0, 0, 0, 0) == 1);
+          +    assert(ser_cache_global(UINT64_MAX, 0, 1, 0, 0, 0, 1) == 1);
+          +    return 0;
+          +}
+          diff --git a/graphics/nvn/tests/t_nvn_vconv_keep.m b/graphics/nvn/tests/t_nvn_vconv_keep.m
+          new file mode 100644
+          index 0000000..96fc7bc
+          --- /dev/null
+          +++ b/graphics/nvn/tests/t_nvn_vconv_keep.m
+          @@ -0,0 +1,74 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +// Real Metal buffers and the production cache, with synthetic source bytes.
+          +#include "../gfx/nvn/nvn_mtl.m"
+          +extern void dm_guest_write_prepare(void *addr, size_t len);
+          +#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
+          +int main(int argc, char **argv) { @autoreleasepool {
+          +    if (argc > 1 && !strcmp(argv[1], "--disabled")) { CHECK(!vk_enabled()); CHECK(!vk_get((vk_key){0}, 0, NULL, 0)); return 0; }
+          +    setenv("DM_PRESENT_LINK", "0", 1); setenv("NXGAL_BE", "mtl3", 1); setenv("DM_NVN_UBP_INFLIGHT", "1", 1); mtl_init(); CHECK(g_m3);
+          +    size_t pg = (size_t)getpagesize(), len = pg * 4; uint8_t *p = NULL;
+          +    CHECK(!posix_memalign((void **)&p, pg, len)); memset(p, 7, len);
+          +    nvn_dirty_add_range(p, len);
+          +    pend_reset(); uint8_t *src = p + 100; uint64_t n = pg * 2;
+          +    vk_key k = {(uint64_t)(uintptr_t)p, len, 3, n, 0x03, 100, 1};
+          +    uint64_t addr = (uint64_t)(uintptr_t)src; CHECK(!vk_get(k, addr, src, n));
+          +    g_sub_serial++; uint64_t a = vk_get(k, addr, src, n);
+          +    CHECK(a); CHECK(vk_get(k, addr, src, n) == a);
+          +    vk_ent *e = NULL; for (int i = 0; i < VK_SLOTS; i++) if (g_vk[i].state.valid) e = &g_vk[i];
+          +    CHECK(e); id<MTLBuffer> b = (__bridge id<MTLBuffer>)e->buf;
+          +    float want[4]; vconv_elem(0x03, src, want); CHECK(!memcmp((uint8_t *)b.contents + 48, want, 16));
+          +    for (int i = 0; i < 48; i++) CHECK(((uint8_t *)b.contents)[i] == 0);
+          +    NSError *error = nil;
+          +    id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal; kernel void read0(device const uint4 *x [[buffer(0)]], device uint *y [[buffer(1)]]) { y[0] = x[0].x; }" options:nil error:&error];
+          +    CHECK(lib); id<MTLFunction> fn = [lib newFunctionWithName:@"read0"]; CHECK(fn);
+          +    id<MTLComputePipelineState> pipe = [g_dev newComputePipelineStateWithFunction:fn error:&error]; CHECK(pipe);
+          +    id<MTLBuffer> out = [g_dev newBufferWithLength:4 options:MTLResourceStorageModeShared]; CHECK(out);
+          +    id<MTLCommandQueue> q = [g_dev newCommandQueue]; CHECK(q);
+          +    id<MTLCommandBuffer> cb = [q commandBuffer]; CHECK(cb); id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder]; CHECK(ce);
+          +    [ce setComputePipelineState:pipe]; [ce setBuffer:b offset:48 atIndex:0]; [ce setBuffer:out offset:0 atIndex:1];
+          +    [ce dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)]; [ce endEncoding]; [cb commit]; [cb waitUntilCompleted];
+          +    CHECK(cb.status == MTLCommandBufferStatusCompleted); uint32_t expected; memcpy(&expected, want, 4); CHECK(*(uint32_t *)out.contents == expected);
+          +    if (g_m3) { id<MTLBuffer> resolved = nil; NSUInteger off = 0; CHECK(m3_buf_at(a - 48, &resolved, &off)); CHECK(resolved == b && off == 0); }
+          +    p[0]++; CHECK(vk_get(k, addr, src, n) == a); // neighbour in shared edge page
+          +    src[0]++; uint64_t before = g_vk_made; CHECK(!vk_get(k, addr, src, n)); CHECK(g_vk_made == before);
+          +    g_sub_serial += 64; CHECK(vk_get(k, addr, src, n)); CHECK(g_vk_made == ++before);
+          +    dm_guest_write_prepare(p + pg + 1, 1); p[pg + 1]++;
+          +    CHECK(!vk_get(k, addr, src, n)); g_sub_serial += 128;
+          +    CHECK(vk_get(k, addr, src, n)); CHECK(g_vk_made == ++before);
+          +    nvn_dirty_remove_range(p); nvn_dirty_add_range(p, len);
+          +    CHECK(!vk_get(k, addr, src, n)); g_sub_serial++;
+          +    CHECK(vk_get(k, addr, src, n)); CHECK(g_vk_made == ++before);
+          +    sbw_note(addr + n - 1, 1, SBW_GPU); CHECK(!g_vk_bytes);
+          +    pend_reset();
+          +    g_sub_serial += 64; CHECK(vk_get(k, addr, src, n)); vk_gpu_write(0, 0); CHECK(!g_vk_bytes);
+          +    vk_session_clear(); pend_reset();
+          +    uint64_t fm = nvn_dirty_mapping_generation(), fst = nvn_dirty_now(); const void *fsp = nvn_dirty_span(src, n); CHECK(fsp);
+          +    nvn_dirty_protect(src, n);
+          +    g_vconv[0].addr = k.addr; g_vconv[0].size = k.size; g_vconv[0].v0 = k.v0; g_vconv[0].nv = k.nv;
+          +    g_vconv[0].fmt = k.fmt; g_vconv[0].off = k.off; g_vconv[0].stride = k.stride; g_vconv[0].serial = g_arena_gen;
+          +    g_vconv[0].map = fm; g_vconv[0].stamp = fst; g_vconv[0].src = src; g_vconv[0].n = n; g_vconv[0].span = fsp; g_vconv[0].gpu = 123;
+          +    CHECK(vconv_frame_get(k, addr, src, n) == 123);
+          +    // Submit an inline write before the persistent entry exists. gw_commit stores
+          +    // this small update in IFW instead of GW; the next submission resets pend.
+          +    CHECK(!vk_admit(g_vk_probe, VK_SLOTS, k, fm, src, n, g_sub_serial)); g_sub_serial++;
+          +    uint8_t update = (uint8_t)(src[0] + 1);
+          +    id<MTLBuffer> update_buf = [g_dev newBufferWithBytes:&update length:1 options:MTLResourceStorageModeShared]; CHECK(update_buf);
+          +    int pi = pend_add(addr, 1, 1); CHECK(pi >= 0);
+          +    g_upd[g_nupd] = (upd_ent){addr, 0, update_buf}; g_pend_upd[pi] = (uint32_t)++g_nupd;
+          +    gw_commit(g_done + 1); pend_reset();
+          +    CHECK(!pend_hits(addr, n)); CHECK(!gw_live(addr, addr + n)); CHECK(ifw_hits(addr, addr + n));
+          +    CHECK(!vk_get(k, addr, src, n)); CHECK(!vconv_frame_get(k, addr, src, n));
+          +    // Complete the synthetic fence; unchanged CPU bytes are then reusable.
+          +    CHECK(g_ifw_seq); g_ifw[g_ifw_seq % IFW_N].fence = 0;
+          +    CHECK(!ifw_hits(addr, addr + n)); CHECK(vconv_frame_get(k, addr, src, n) == 123);
+          +    CHECK(vk_get(k, addr, src, n));
+          +    sbw_note(addr, 1, SBW_GPU); CHECK(!vconv_frame_get(k, addr, src, n)); pend_reset();
+          +    dm_guest_write_prepare(src, 1); src[0]++; CHECK(!vconv_frame_get(k, addr, src, n));
+          +    nvn_dirty_remove_range(p); nvn_dirty_add_range(p, len); CHECK(!vconv_frame_get(k, addr, src, n));
+          +    vk_session_clear(); before = g_vk_made;
+          +    for (int i = 0; i < 100; i++) { src[0]++; g_sub_serial++; CHECK(!vk_get(k, addr, src, n)); }
+          +    CHECK(g_vk_made == before); g_sub_serial += 32768; CHECK(vk_get(k, addr, src, n));
+          +    vk_session_clear(); CHECK(!g_vk_bytes); nvn_dirty_remove_range(p); free(p);
+          +    puts("vconv keep Metal checks passed"); return 0;
+          +} }
+          diff --git a/graphics/nvn/tests/t_nvn_vconv_keep_logic.c b/graphics/nvn/tests/t_nvn_vconv_keep_logic.c
+          new file mode 100644
+          index 0000000..30d815d
+          --- /dev/null
+          +++ b/graphics/nvn/tests/t_nvn_vconv_keep_logic.c
+          @@ -0,0 +1,41 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +#include <assert.h>
+          +#include "../gfx/nvn/nvn_vconv_keep.h"
+          +int main(void) {
+          +    vk_state s = {0}; vk_key k = {1, 16384, 0, 4096, 4, 0, 4};
+          +    assert(!vk_match(&s, &k, 7, 10));
+          +    s.key = k; s.valid = 1; s.map = 7; s.dirty = 10;
+          +    assert(vk_match(&s, &k, 7, 10));
+          +    assert(!vk_match(&s, &k, 8, 10));
+          +    assert(!vk_match(&s, &k, 7, 11));
+          +    assert(!vk_overlap(100, 10, 110, 5));
+          +    assert(vk_overlap(100, 10, 109, 1));
+          +    assert(vk_overlap(100, 10, 0, 0));
+          +    assert(vk_overlap(100, 10, UINT64_MAX - 1, 4));
+          +    assert(!vk_size_ok(4095, 0, 64u << 20));
+          +    assert(vk_size_ok(4096, 4096, 64u << 20));
+          +    assert(!vk_size_ok(4096, UINT64_MAX, 64u << 20));
+          +    uint64_t plo, pn, head, tail;
+          +    assert(vk_page_parts(100, 9000, 4096, &plo, &pn, &head, &tail));
+          +    assert(plo == 4096 && pn == 4096 && head == 3996 && tail == 908);
+          +    assert(!vk_page_parts(UINT64_MAX - 4, 10, 4096, &plo, &pn, &head, &tail));
+          +    assert(vk_page_parts(1, 4, 4096, &plo, &pn, &head, &tail));
+          +    assert(!pn && head == 4 && !tail);
+          +    uint8_t src[] = {9, 1, 2, 3, 4, 8}, copy[] = {1, 2, 3, 4};
+          +    assert(vk_edges_equal(copy, src + 1, 4, 2, 2));
+          +    src[0]++; assert(vk_edges_equal(copy, src + 1, 4, 2, 2));
+          +    src[1]++; assert(!vk_edges_equal(copy, src + 1, 4, 2, 2));
+          +    vk_probe probes[2] = {0}; uint8_t dynamic[64] = {0};
+          +    assert(!vk_admit(probes, 2, k, 7, dynamic, sizeof dynamic, 1));
+          +    assert(!vk_admit(probes, 2, k, 7, dynamic, sizeof dynamic, 1));
+          +    assert(vk_admit(probes, 2, k, 7, dynamic, sizeof dynamic, 2));
+          +    vk_backoff(probes, 2, k, 7, 2);
+          +    for (uint64_t sub = 3; sub < 300; sub++) { dynamic[0]++; assert(!vk_admit(probes, 2, k, 7, dynamic, sizeof dynamic, sub)); }
+          +    assert(vk_admit(probes, 2, k, 7, dynamic, sizeof dynamic, 40000));
+          +    assert(!vk_admit(probes, 2, k, 8, dynamic, sizeof dynamic, 40000));
+          +    vk_probe many[256] = {0}; vk_key keys[144];
+          +    for (unsigned i = 0; i < 144; i++) { keys[i] = k; keys[i].addr += i; assert(!vk_admit(many, 256, keys[i], 9, dynamic, sizeof dynamic, 1)); }
+          +    for (unsigned i = 0; i < 144; i++) assert(vk_admit(many, 256, keys[i], 9, dynamic, sizeof dynamic, 2));
+          +    return 0;
+          +}
+          diff --git a/graphics/nvn/tests/vconv_keep_portable_test.py b/graphics/nvn/tests/vconv_keep_portable_test.py
+          new file mode 100644
+          index 0000000..3fd4026
+          --- /dev/null
+          +++ b/graphics/nvn/tests/vconv_keep_portable_test.py
+          @@ -0,0 +1,47 @@
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Build real portable cache predicates and prove key negative controls fail."""
+          +import argparse
+          +import pathlib
+          +import subprocess
+          +import tempfile
+          +
+          +ROOT = pathlib.Path(__file__).resolve().parents[3]
+          +HEADER = ROOT / "graphics/nvn/gfx/nvn/nvn_vconv_keep.h"
+          +TEST = ROOT / "graphics/nvn/tests/t_nvn_vconv_keep_logic.c"
+          +
+          +
+          +def run(cc, header):
+          +    with tempfile.TemporaryDirectory(prefix="s2-vconv-") as tmp:
+          +        root = pathlib.Path(tmp)
+          +        target = root / "gfx/nvn/nvn_vconv_keep.h"
+          +        target.parent.mkdir(parents=True)
+          +        target.write_text(header, encoding="utf-8")
+          +        test = root / "tests/t_nvn_vconv_keep_logic.c"
+          +        test.parent.mkdir()
+          +        test.write_text(TEST.read_text(encoding="utf-8"), encoding="utf-8")
+          +        exe = root / "test.exe"
+          +        subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(test), "-o", str(exe)], check=True)
+          +        return subprocess.run([str(exe)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+          +
+          +
+          +def main():
+          +    parser = argparse.ArgumentParser()
+          +    parser.add_argument("--cc", default="cc")
+          +    args = parser.parse_args()
+          +    source = HEADER.read_text(encoding="utf-8")
+          +    assert run(args.cc, source) == 0, "production logic failed"
+          +    print("PASS production vconv cache predicates and admission")
+          +    controls = {
+          +        "mapping generation": ("s->map == map", "(s->map == map || 1)"),
+          +        "overflow guard": ("n <= (UINT64_MAX - prefix) / 16", "(n <= (UINT64_MAX - prefix) / 16 || 1)"),
+          +        "dynamic backoff": ("return sub >= p->retry && !changed;", "return 1;"),
+          +    }
+          +    for name, (before, after) in controls.items():
+          +        assert source.count(before) == 1, f"mutation missing: {name}"
+          +        assert run(args.cc, source.replace(before, after, 1)) != 0, f"negative control survived: {name}"
+          +        print(f"PASS negative control: {name}")
+          +
+          +
+          +if __name__ == "__main__":
+          +    main()
+          diff --git a/runtime/tests/mk/nvn_ser_cache.mk b/runtime/tests/mk/nvn_ser_cache.mk
+          new file mode 100644
+          index 0000000..1dbdcb9
+          --- /dev/null
+          +++ b/runtime/tests/mk/nvn_ser_cache.mk
+          @@ -0,0 +1,16 @@
+          +# native-test-nvn_ser_cache：本单测的构建规则（runtime/build.mk 末尾按 runtime/tests/mk/*.mk 收进来；新单测只新增一个分片，不改 build.mk）
+          +NATIVE_TEST_OWN += nvn_ser_cache
+          +ifeq ($(S2A_UNAME),Darwin)
+          +# 生产序号同步和登记反向索引的原生回归。
+          +$(BUILD)/tests/t_nvn_ser_cache: graphics/nvn/tests/t_nvn_ser_cache.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
+          +	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
+          +	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \
+          +	  -o $@ graphics/nvn/tests/t_nvn_ser_cache.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN) \
+          +	  -Wl,-rpath,@executable_path/nvn/widen $(NVN_TEST_WEAK) \
+          +	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
+          +	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
+          +.PHONY: native-test-nvn_ser_cache
+          +native-test-nvn_ser_cache: $(BUILD)/tests/t_nvn_ser_cache
+          +	$(BUILD)/tests/t_nvn_ser_cache
+          +TEST_TARGETS += native-test-nvn_ser_cache
+          +endif
+          diff --git a/runtime/tests/mk/nvn_vconv_keep.mk b/runtime/tests/mk/nvn_vconv_keep.mk
+          new file mode 100644
+          index 0000000..d26907f
+          --- /dev/null
+          +++ b/runtime/tests/mk/nvn_vconv_keep.mk
+          @@ -0,0 +1,15 @@
+          +NATIVE_TEST_OWN += nvn_vconv_keep
+          +ifeq ($(S2A_UNAME),Darwin)
+          +$(BUILD)/tests/t_nvn_vconv_keep: graphics/nvn/tests/t_nvn_vconv_keep.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
+          +	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
+          +	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \
+          +	  -o $@ graphics/nvn/tests/t_nvn_vconv_keep.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN) \
+          +	  -Wl,-rpath,@executable_path/nvn/widen $(NVN_TEST_WEAK) \
+          +	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
+          +	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
+          +.PHONY: native-test-nvn_vconv_keep
+          +native-test-nvn_vconv_keep: $(BUILD)/tests/t_nvn_vconv_keep
+          +	$(BUILD)/tests/t_nvn_vconv_keep
+          +	DM_NVN_VCONV_KEEP=0 $(BUILD)/tests/t_nvn_vconv_keep --disabled
+          +TEST_TARGETS += native-test-nvn_vconv_keep
+          +endif
+          S2ARM_METAL3_OPT_PATCH
+          git apply --check "$RUNNER_TEMP/s2arm-metal3-opt.patch"
+          git apply --index "$RUNNER_TEMP/s2arm-metal3-opt.patch"
+          tree="$(git write-tree)"
+          test "$tree" = "f0714c3e5e9c9d042ec517cb04e69068a3bb3391"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
           export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
           export GIT_AUTHOR_DATE='2026-11-17T08:00:00Z' GIT_COMMITTER_DATE='2026-11-17T08:00:00Z'
-          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.3 private Metal4 allocator completion experiment, existing daily fixes preserved; upstream 3ddf11c00202745867391069873419d89e7c72e4')"
-          git checkout -b s2arm-2x-build "$snapshot"
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.3 Metal3 vertex conversion and texture serial cache experiment; daily fixes preserved; upstream 3ddf11c00202745867391069873419d89e7c72e4')"
+          git checkout -b s2arm-metal3-opt-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
           python3 pack/shell/closure.py pyimports
           python3 pack/shell/closure.py csiblings
@@ -2926,16 +3278,6 @@ jobs:
           python3 graphics/nvn/tests/warm_paths_probe.py --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/prewarm-negative.log"
           python3 graphics/nvn/tests/warm_paths_probe.py 2>&1 | tee "$logs/prewarm-foundation.log"
           echo 'Foundation list selection: PASS (12 cases; baseline negative control). Extractor: 5 portable tests PASS. Metal archive roundtrip: pending. iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
-
-      - name: Verify present lifetime accounting and experimental backend selection
-        working-directory: source
-        run: |
-          set -euo pipefail
-          logs="$RUNNER_TEMP/s2arm-output/logs"
-          python3 graphics/nvn/tests/present_alloc_probe.py --cc clang --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/present-negative.log"
-          CC=clang python3 -B -m unittest discover -s graphics/nvn/tests -p test_present_alloc_probe.py 2>&1 | tee "$logs/present-accounting.log"
-          "$S2A_GMAKE" CC=clang native-test-nvn_be 2>&1 | tee "$logs/metal4-selection.log"
-          echo 'Portable present accounting: 9 checks plus 3 mutation controls PASS. Backend selection: 19 cases PASS. GPU and iPhone verification pending.' > "$logs/metal4-test-status.txt"
 
       - name: Verify local diagnostics export routes and baseline negative control
         working-directory: source
@@ -2954,6 +3296,12 @@ jobs:
           python3 tools/l10n_dupkeys.py
           python3 tests/diag_localization_test.py
           echo 'Local diagnostic export: 34 portable checks PASS; baseline negative control PASS. UIKit share sheet still requires device verification.' > "$logs/diag-export-status.txt"
+
+      - name: Verify Metal3 cache production logic and negative controls
+        working-directory: source
+        run: |
+          set -euo pipefail
+          python3 graphics/nvn/tests/metal3_cache_regression.py 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/metal3-cache-portable.log"
 
       - name: Prepare Python dependencies and timezone sources
         working-directory: source
@@ -3036,10 +3384,10 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          echo 'S2ARM_CI_REVISION=4.0-prewarm-localdiag-airplay-speed1'
+          echo 'S2ARM_CI_REVISION=4.3-metal3-cache-opt1'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
-          "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime build/tests/t_nvn_present_alloc 2>&1 | tee "$logs/rscale-native-build.log"
+          "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime build/tests/t_nvn_vconv_keep build/tests/t_nvn_ser_cache 2>&1 | tee "$logs/rscale-native-build.log"
           cat > "$RUNNER_TEMP/s2arm-metal-device.m" <<'METAL_DEVICE'
           #import <Foundation/Foundation.h>
           #import <Metal/Metal.h>
@@ -3078,21 +3426,19 @@ jobs:
           if [ "$device_status" -eq 77 ]; then
             echo 'Metal fixture compilation: PASS. GPU execution: SKIPPED (runner lacks required capabilities for the full Metal3/4 matrix; see rscale-device.log). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
             echo '::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.'
-            echo "Real present allocator GPU regression: COMPILED; execution SKIPPED (runner GPU capabilities). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"
             echo 'Foundation list selection: PASS (12 cases; baseline negative control). Metal archive roundtrip: COMPILED, EXECUTION SKIPPED (runner GPU capabilities). iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
           elif [ "$device_status" -ne 0 ]; then
             echo "::error::Metal device probe failed ($device_status)."
             exit "$device_status"
           else
             echo 'Metal fixture compilation: PASS. GPU execution: RUNNING.' > "$logs/rscale-gpu-status.txt"
-            "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_rscale native-test-nvn_pkg_gpu_write native-test-nvn_warm_runtime native-test-nvn_present_alloc 2>&1 | tee "$logs/rscale-native-run.log"
-            echo "Real present allocator GPU regression: PASS (Metal 3 and Metal 4). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"
-            echo 'Metal fixture compilation: PASS. GPU execution: PASS (upstream render-scale, package GPU-write and runtime-only PSO fixtures). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
+            "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_rscale native-test-nvn_pkg_gpu_write native-test-nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-run.log"
+            NXGAL_BE=mtl3 "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_vconv_keep native-test-nvn_ser_cache 2>&1 | tee "$logs/metal3-cache-native-run.log"
+            echo 'Metal fixture compilation: PASS. GPU execution: PASS (render-scale, package GPU-write, PSO and Metal3 cache fixtures). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
             echo 'Foundation list selection: PASS (12 cases; baseline negative control). Metal runtime-only archive: PASS (two processes, write then hit, GPU output 7). iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
           fi
           cat "$logs/rscale-gpu-status.txt" >> "$GITHUB_STEP_SUMMARY"
           cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"
-          cat "$logs/metal4-test-status.txt" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build Shell with the upstream entry point
         working-directory: source
@@ -3113,16 +3459,17 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.4.3 Metal4 experiment + existing private daily fixes; default iOS 26 backend stays Metal3"
-            echo "Opt-in: NXGAL_BE=mtl4-test; rollback: NXGAL_BE=mtl3. This does not prove iOS compositor issue #311 is fixed."
-            cat "$output/logs/metal4-test-status.txt"
+            echo "Custom build: S2Arm 0.4.3 Metal3 cache experiment; 1x handheld; daily PSO/local diagnostics/AirPlay fixes preserved"
+            echo "Local implementation commit: 198548ab08ca818fbccb4dacda5e9d69a823cf98"
+            echo "Patched source tree: f0714c3e5e9c9d042ec517cb04e69068a3bb3391"
+            echo "DM_NVN_VCONV_KEEP=0 and DM_NVN_TEX_SERIAL_CACHE=0 independently disable the two optimizations; iPhone FPS NOT TESTED."
             echo "Upstream baseline: 3ddf11c00202745867391069873419d89e7c72e4"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
             cat "$output/logs/prewarm-status.txt"
             cat "$output/logs/diag-export-status.txt"
             cat "$output/logs/airplay-fps-status.txt"
-            echo "Existing resources with hostAbi=1 and dmshChain=0be3f28548fd can be reused. New patch grouping and offline shader/rewriter fixes require regenerating affected games; no general performance gain is claimed."
+            echo "These two cache changes are runtime-only: resources and compiled game modules accepted by the daily 0.4.3 build can be reused. No FPS gain is claimed before device comparison."
             echo "iPhone gameplay and visual quality are not verified by this workflow."
             echo "Source: https://github.com/jhaizhou-ops/S2Arm"
             git rev-parse HEAD
@@ -3132,25 +3479,25 @@ jobs:
           COPYFILE_DISABLE=1 tar -czf "$output/artifact/S2Arm-Shell.tar.gz" -C "$output" Shell
           # Shell IDs bind source trees: ship the matching source for Windows IPA
           # assembly instead of changing old Engine metadata or bypassing checks.
-          git bundle create "$output/artifact/S2Arm-source.bundle" refs/heads/s2arm-2x-build
+          git bundle create "$output/artifact/S2Arm-source.bundle" refs/heads/s2arm-metal3-opt-build
           git bundle verify "$output/artifact/S2Arm-source.bundle"
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
+          cp "$RUNNER_TEMP/s2arm-metal3-opt.patch" "$output/artifact/s2arm-metal3-opt.patch"
+          cp "$output/logs/metal3-cache-portable.log" "$output/artifact/metal3-cache-portable.log"
           cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"
-          cp "$output/logs/metal4-test-status.txt" "$output/artifact/metal4-test-status.txt"
           cp "$output/logs/diag-export-status.txt" "$output/artifact/diag-export-status.txt"
           cp "$output/logs/airplay-fps-status.txt" "$output/artifact/airplay-fps-status.txt"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
           printf '0.4.3\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch metal4-test-status.txt prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'EXPERIMENTAL: do not replace the daily installation. Opt in with NXGAL_BE=mtl4-test only after assembling this Shell; remove it or set mtl3 to roll back. #311 and real FPS remain unverified.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Shell build completed. Download S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. AirPlay fallback, BOTW timing, GPU visuals and export UI remain to be verified on device. BOTW requires repackaging with this matching Engine; existing IPA modules do not gain compensation by replacing Shell alone.' >> "$GITHUB_STEP_SUMMARY"
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch s2arm-metal3-opt.patch metal3-cache-portable.log prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
+          echo 'Shell build completed. Download S2Arm-0.4.3-Shell-Metal3-Opt-LocalDiag from Artifacts and assemble with its matching source bundle. This experiment keeps Metal3, local ZIP diagnostics and the daily 0.4.3 fixes. Existing daily game resources need not be regenerated for these two runtime cache changes. Keep the daily IPA. Compare each cache switch separately at 1x handheld, original aspect; iPhone performance, memory and rendering remain unverified.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag
+          name: S2Arm-0.4.3-Shell-Metal3-Opt-LocalDiag
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0

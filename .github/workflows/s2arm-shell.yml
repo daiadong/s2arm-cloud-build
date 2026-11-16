@@ -3,19 +3,19 @@
 # Self-contained: the patch and matching-source packaging are included below.
 # GPU eligibility checks unified memory, Metal4 and residency creation.
 # Runtime-only PSO prewarm fix plus local iOS diagnostics export; source / closure checks stay enabled.
-name: S2Arm 0.4.3 Shell 2x PSOFix LocalDiag AirPlaySpeed (macOS)
+name: S2Arm 0.4.3 Metal4 Test LocalDiag (macOS)
 
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/s2arm-043-custom']
+    branches: ['test/metal4-present-completion']
     paths: ['.github/workflows/s2arm-shell.yml']
 
 permissions:
   contents: read
 
 concurrency:
-  group: s2arm-shell-043-daily
+  group: s2arm-shell-043-metal4-test
   cancel-in-progress: false
 
 jobs:
@@ -105,7 +105,7 @@ jobs:
             dotnet --info
           } 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/environment.txt"
 
-      - name: Apply PSO and local diagnostics fixes; check Foundation regression
+      - name: Apply private fixes and Metal4 experiment; check Foundation regression
         working-directory: source
         run: |
           set -euo pipefail
@@ -113,11 +113,78 @@ jobs:
           git show HEAD:graphics/nvn/gfx/nvn/nvn_mtl.m > "$RUNNER_TEMP/nvn_mtl-before-prewarm.m"
           git show HEAD:ios/diag.m > "$RUNNER_TEMP/diag-before-local.m"
           cat > "$RUNNER_TEMP/s2arm-2x.patch" <<'S2ARM_2X_PATCH'
-          diff --git "a/docs/\345\235\221\350\256\260\345\275\225.md" "b/docs/\345\235\221\350\256\260\345\275\225.md"
-          index eb1ff351..e757afb2 100644
-          --- "a/docs/\345\235\221\350\256\260\345\275\225.md"
-          +++ "b/docs/\345\235\221\350\256\260\345\275\225.md"
-          @@ -6159,3 +6159,10 @@ Adreno 650 / Android 17 原创 NDK 探针（修复二进制 SHA-256 前缀 `682b
+          diff --git a/THIRD_PARTY_LICENSES.md b/THIRD_PARTY_LICENSES.md
+          index afe395cd..0dc6494d 100644
+          --- a/THIRD_PARTY_LICENSES.md
+          +++ b/THIRD_PARTY_LICENSES.md
+          @@ -8,7 +8,7 @@ S2Arm 本身以 Apache License 2.0 授权（仓库根目录 [LICENSE](LICENSE) 
+           | --- | --- | --- | --- | --- | --- |
+           | Ryujinx 树 | 目录 `compat/tree`（旧文档记 1.3.2） | MIT | https://github.com/Ryujinx/Ryujinx ，许可 `compat/tree/LICENSE.txt` | 是（编进 Mac 宿主 / 出包工具） | 是（编进 iOS 宿主） |
+           | Ryujinx WSI | 派生自 Ryujinx | MIT | `graphics/vulkan/wsi`，`LICENSE.Ryujinx.txt` | 安卓/Vulkan 构建用 | 否（不进 iOS IPA） |
+          -| 直连图形层部分代码 | 提交 `86d9ba12` | MIT | 许可全文 `graphics/nvn/LICENSE`，版权 © 2026 seedds | 是 | 是 |
+          +| 直连图形层部分代码 | 提交 `86d9ba12`；私有 Metal 4 测试分支另适配上屏 allocator 修复及测试 `82ab25b40b75b3b7ce7e1da614ea15f231e8a029` | MIT | 许可全文 `graphics/nvn/LICENSE`，版权 © 2026 seedds | 是 | 是 |
+           | ns2pro-bridge | 基线 `4d7ce092` | MIT | https://github.com/DanielZhangyc/ns2pro-bridge ，`runtime/ns2pro/LICENSE` | 按需编进 framework 时是 | 按需编进 framework 时是 |
+           | Vulkan-Headers | 1.4.363 | Apache-2.0 OR MIT | https://github.com/KhronosGroup/Vulkan-Headers ，`graphics/nvn/third_party/vulkan-headers` | 否（只是编译用头） | 否 |
+           | SPIRV-Cross | vulkan-sdk-1.4.363.0 | Apache-2.0 | https://github.com/KhronosGroup/SPIRV-Cross ，源码在 `graphics/third_party/spirv_cross`（旧文档写「不进仓库」是错的）。命令行另从 Homebrew 打进 .app | 是（源码在引擎树；`spirv-cross` 在 Runtime/bin） | 是（`graphics/build.mk` 把源码编进 iOS 渲染器静态库 `libnxgal.a`，首遇着色器在机上现编用） |
+          diff --git a/docs/metal4-test-plan.md b/docs/metal4-test-plan.md
+          new file mode 100644
+          index 00000000..fd1ebd0b
+          --- /dev/null
+          +++ b/docs/metal4-test-plan.md
+          @@ -0,0 +1,14 @@
+          +# 0.4.3 Metal 4 isolated experiment
+          +
+          +Baseline: a543f07aa8eecec832f56baa3ccd3f23b5774cc9.
+          +Branch: test/metal4-present-completion. Daily installation and game library are untouched.
+          +
+          +1. Add a portable regression executing the production allocator wait and feedback statements; prove the baseline fails.
+          +2. Port NXNative 82ab25b40b75b3b7ce7e1da614ea15f231e8a029's per-slot GPU completion tracking. Preserve queue progress, skipped frames, AA/FX release and Metal 3 feedback.
+          +3. Add NXGAL_BE=mtl4-test as an explicit experimental opt-in. Missing/ordinary values retain the iOS 26 fallback; unsupported OS/GPU still cannot select Metal 4.
+          +4. Adapt the upstream real GPU regression; compile in macOS CI and execute only on a capable GPU. Generate a separate self-contained YAML including existing local diagnostics and private fixes.
+          +5. Run portable checks, baseline and mutation controls; review the complete branch, commit and deliver the YAML. iPhone validation remains pending until the new Shell is built and assembled.
+          +
+          +Scope: this tests allocator correctness, not a guaranteed fix for backboardd #311 or a promised FPS improvement. No game resources need regeneration for these runtime-only changes.
+          +
+          +Decision: use a standalone local clone under E:/project/S2ARM instead of a linked worktree so later C-drive cleanup cannot invalidate this repository. No remote publication is included.
+          diff --git a/docs/metal4-test-usage.md b/docs/metal4-test-usage.md
+          new file mode 100644
+          index 00000000..e393b582
+          --- /dev/null
+          +++ b/docs/metal4-test-usage.md
+          @@ -0,0 +1,28 @@
+          +# 0.4.3 Metal 4 测试分支
+          +
+          +仓库：`E:\project\S2ARM\S2Arm-Metal4-Test`
+          +分支：`test/metal4-present-completion`
+          +基线：`a543f07aa8eecec832f56baa3ccd3f23b5774cc9`（现有 0.4.3 私有修复源码）。
+          +
+          +## 构建与使用
+          +
+          +1. 将 `E:\project\S2ARM\s2arm-shell-0.4.3-metal4-test.yml` 的内容替换到自己 GitHub 构建仓库的 `.github/workflows/s2arm-shell.yml`，手动运行 `S2Arm 0.4.3 Metal4 Test LocalDiag (macOS)`。
+          +2. 下载产物 `S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag`。它是 Shell 和匹配源码，仍需组装 IPA。测试包与日常包分开保留，诊断仍只在本地导出。
+          +3. 新 IPA 组装后，先不加测试开关运行，iOS 26.x 仍选 Metal 3。保留目前使用的 1X、掌机设置。
+          +4. 仅在该测试 IPA 的 `env.txt` 中加入 `NXGAL_BE=mtl4-test`，完全划掉 LiveContainer 后重开。诊断日志应出现 `direct backend: Metal 4 (EXPERIMENTAL NXGAL_BE=mtl4-test`。
+          +5. 用相同存档、相同场景对比。若黑屏、GPU 错误或系统界面重启，将该行改成 `NXGAL_BE=mtl3`，完全划掉 LiveContainer 后重开，导出本地诊断包。
+          +
+          +此改动只涉及运行壳，不需要重新生成游戏资源。原有日常程序、游戏库、配置均未改动。
+          +
+          +## 实际改动与验证边界
+          +
+          +- 适配 NXNative `82ab25b4`：每组上屏 allocator/command buffer/UV buffer 等自己的 GPU 完成记录；丢帧或未提交只推进队列进度，不会释放仍在 GPU 使用的槽位。
+          +- iOS 26 默认 Metal 3；只有完整匹配 `mtl4-test` 且 OS/GPU 支持才切 Metal 4。普通 `mtl4` 保持原先行为。
+          +- Metal 3 的完成反馈、AA/MetalFX busy 释放和全局队列进度保留。
+          +- Windows：生产等待/反馈语句 9 项通过；基线 5 项失败；撤掉等待、撤掉完成记录、写错槽位 3 个负对照均失败；后端选择 19 项通过。
+          +- macOS Metal 测试从 NXNative 的真实队列/离屏 drawable 用例适配，覆盖丢帧和连续三帧在途；CI 必须编译，GPU 满足条件才执行 Metal 3/4 两条路径。不能执行时明确标记 SKIPPED。
+          +- Windows 无 Xcode：本机没有编译 iOS，也没有验证真机、系统合成器 #311 或帧率提升。此次没有移植 `88c7e03f`，当前运行壳未使用该提交修复的特化描述符 API。
+          +
+          +重新生成 YAML：先 `git add` 保存完整源文件索引，再运行 `python tools/metal4_test_workflow.py --template E:\project\S2ARM\s2arm-shell-0.4.3.yml --output E:\project\S2ARM\s2arm-shell-0.4.3-metal4-test.yml`。YAML 内含补丁及完整源码树校验，独立输出避免自引用。
+          +
+          +参考：https://github.com/seedds/nxnative/commit/82ab25b40b75b3b7ce7e1da614ea15f231e8a029
+          diff --git a/docs/坑记录.md b/docs/坑记录.md
+          index eb1ff351..9659fed8 100644
+          --- a/docs/坑记录.md
+          +++ b/docs/坑记录.md
+          @@ -6159,3 +6159,17 @@ Adreno 650 / Android 17 原创 NDK 探针（修复二进制 SHA-256 前缀 `682b
            **现象**：v0.4.0 候选 Mac（屏幕最高 120 Hz）开着带 60 / 120 两档帧率补丁的游戏，自动档日志「帧率档 60 帧（默认…屏幕最高 60 Hz）」，随后才「窗口所在屏最高刷新 120 Hz」。
            **根因**：起局选档（cpatch.c fps_pick）早于建窗，front_screen_max_fps 还是 0、按 60 算；窗口建好知道是 120 后没人重挑。
            **做法**：front_mac.m screen_fps_note 刷新率变了就调 s2a_cpatch_screen_changed，自动档（玩家没选、起局没给 S2A_FPS_PICK）按新屏幕重挑。t_cpatch_levels ⑤。
@@ -128,11 +195,54 @@ jobs:
           +- 机制：运行时入口改为本地分享与本地化键迁移是两个接口；仅替换旧版翻译文件会丢失新版键。按键迁移并补齐六语，保留新版崩溃自动关闭与恢复逻辑。
           +- 读数（Windows，基线 3ddf11c0，未运行 iPhone）：新增本地化 2 项用例修前失败、修后通过；28 张表重复键 0；诊断入口检查官方基线 7/34 不符，迁移后 34/34 通过；外屏策略 9/9；预热函数提取 5/5。Foundation/Metal 与真实 FPS 运行时测试保留 macOS CI 门禁，本机不能代跑。
           +- 资源兼容检查：现有 6 款 ios kit 均被新版 usable_kit 接受，hostAbi=1、dmshChain=0be3f28548fd；不代表 iPhone 已实测或重建有帧率收益。新 cpatch 组列、宽屏高半配对和离线着色器绑定修正属于重新生成才能进入游戏产物的改动。
+          +
+          +## 私有 0.4.3 Metal 4 分支：上屏队列进度不能代表槽位 GPU 完成（11-17）
+          +
+          +- 现象：生产 display-link 丢帧/跳过上屏会推进 `g_pq_done`，旧 allocator 等待因此可能放行尚未完成的 GPU 工作。
+          +- 根因：队列已处理票号与每组上屏资源的 GPU 完成票号混用。适配 NXNative `82ab25b4`，仅提交完成反馈推进该组 `g_present_alloc_done`。
+          +- 读数（Windows GCC，基线 `a543f07a`，合成状态、不含游戏）：执行原样生产等待与反馈 C 语句的 9 项检查，期望旧版失败 → 旧版 5 项失败；期望修复通过 → 9/9；分别恢复全局等待、撤销完成记录、写错槽位 → 三组均失败。后端选择 19/19；无开关/普通 `mtl4` 在 iOS 26 仍回退，`mtl4-test` 只在支持的 OS/GPU 上生效。
+          +- 射程：只证明票号生命周期与选择规则；未在本机编译 Metal、未测 iPhone，不能据此判定 #311 已修复或 FPS 会提高。
+          diff --git a/graphics/nvn/gfx/nvn/nvn_be.h b/graphics/nvn/gfx/nvn/nvn_be.h
+          index 7429a98f..dc34f408 100644
+          --- a/graphics/nvn/gfx/nvn/nvn_be.h
+          +++ b/graphics/nvn/gfx/nvn/nvn_be.h
+          @@ -1,5 +1,6 @@
+           // Backend of the direct replay layer (#277 D3-1): Metal 4 or Metal 3, picked once in mtl_init. Same switch as the gal renderer (graphics/metal/gal_be.h), plus a device check:
+          -//   NXGAL_BE=mtl3 forces Metal 3 (A/B on systems 26 and up; off by default; any other value does nothing, as in gal);
+          +//   NXGAL_BE=mtl3 forces Metal 3; this private test branch also accepts mtl4-test
+          +//   as an explicit experiment on a compatible OS/GPU. Other values do nothing.
+           //   systems 26 and up whose GPU is in the Metal 4 family (supportsFamily:MTLGPUFamilyMetal4) take Metal 4;
+           //   everything else takes Metal 3: systems below 26, GPUs without Metal 4 on 26 (A12X / A12Z / A13 class), and iOS / iPadOS 26.x (below 27):
+           //   11-09 #311 iPhone18,2 iOS 26.5.2：Metal 4 上屏时系统合成进程 backboardd 在 CA::OGL::MetalContext::add_shared_event（capture_detached ← 分离图层）断言崩溃、
+          @@ -15,6 +16,11 @@ enum { NVN_BE_MTL3 = 3, NVN_BE_MTL4 = 4 };
+           static inline int nvn_be_pick(const char *env, int os26, int family4, int ios26x, const char **why) {
+               if (env && !strcmp(env, "mtl3")) { *why = "forced by NXGAL_BE=mtl3"; return NVN_BE_MTL3; }
+               if (!os26) { *why = "system below macOS / iOS 26"; return NVN_BE_MTL3; }
+          +    if (env && !strcmp(env, "mtl4-test")) {
+          +        if (!family4) { *why = "GPU not in the Metal 4 family"; return NVN_BE_MTL3; }
+          +        *why = ios26x ? "EXPERIMENTAL NXGAL_BE=mtl4-test: iOS 26 compositor safety not verified" : "EXPERIMENTAL NXGAL_BE=mtl4-test";
+          +        return NVN_BE_MTL4;
+          +    }
+               if (ios26x) { *why = "iOS 26: no detached-layer direct present (backboardd add_shared_event assert, #311), Metal 3"; return NVN_BE_MTL3; }
+               if (!family4) { *why = "GPU not in the Metal 4 family"; return NVN_BE_MTL3; }
+               *why = "GPU in the Metal 4 family"; return NVN_BE_MTL4;
           diff --git a/graphics/nvn/gfx/nvn/nvn_mtl.m b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          index 0a2a86ed..266bc3a0 100644
+          index 0a2a86ed..ed7aed2f 100644
           --- a/graphics/nvn/gfx/nvn/nvn_mtl.m
           +++ b/graphics/nvn/gfx/nvn/nvn_mtl.m
-          @@ -9819,12 +9819,15 @@ static NSArray<NSString *> *warm_paths(int say) {
+          @@ -147,6 +147,11 @@ static uint64_t g_vbuf_resolve, g_vbuf_reuse, g_vbuf_set, g_vbuf_skip;
+           static id g_present_args;   // tab_new
+           static id<MTLBuffer> g_present_uv[3];
+           static uint64_t g_present_alloc_fence[3];
+          +// Per-slot GPU completion, protected by g_pq_mu. Queue progress (g_pq_done)
+          +// also advances on dropped/unsubmitted frames and cannot authorize allocator,
+          +// command-buffer or UV-buffer reuse. Only the commit feedback retires a slot.
+          +// Adapted from NXNative 82ab25b4, copyright 2026 seedds, MIT (../../LICENSE).
+          +static uint64_t g_present_alloc_done[3];
+           static pthread_mutex_t g_pq_mu = PTHREAD_MUTEX_INITIALIZER;
+           static pthread_cond_t g_pq_cv = PTHREAD_COND_INITIALIZER;
+           static pthread_cond_t g_link_cv = PTHREAD_COND_INITIALIZER;
+          @@ -9819,12 +9824,15 @@ static NSArray<NSString *> *warm_paths(int say) {
                if (e && !strcmp(e, "off")) return nil;
                if (e && *e) return @[@(e)];
                NSString *seed = [shmap_path().stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"];
@@ -151,6 +261,291 @@ jobs:
            }
            // Tell the front end at once that the first frame will wait for the prewarm (10-30 device line, Monster Hunter Rise cold start mhrise_1030172905_1: the game's first present, 0.96 s, came
            //   before its first submission, where the shader map loads lazily and the prewarm runs, so the loading page was taken down at that present and the 15 s prewarm showed black).
+          @@ -17198,7 +17206,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+               }
+               if (g_present_alloc_fence[alloc_i]) {
+                   DM_BLOCK_BEGIN(); pthread_mutex_lock(&g_pq_mu);
+          -        while (g_pq_done < g_present_alloc_fence[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+          +        while (g_present_alloc_done[alloc_i] < g_present_alloc_fence[alloc_i]) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+                   pthread_mutex_unlock(&g_pq_mu); DM_BLOCK_END();
+               }
+               id<MTL4CommandBuffer> cb = nil; id<MTLCommandBuffer> cb3 = nil;
+          @@ -17229,7 +17237,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
+               NvPresentFX *fxs = g_present_fx ? g_present_fx_slots[alloc_i] : nil;   // 这一帧没用 MetalFX 时也标：槽里的图只要在途就不能被下一次重建换掉
+               fb_add(o, ^(id<MTL4CommitFeedback> f) {
+                   if (f.error && !mtl_gpu_cb_error(f.error, "present", ticket)) MLOG("【红】 display command buffer error: %s", f.error.description.UTF8String);
+          -        pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = NO; if (fxs) fxs->busy = NO; if (ticket > g_pq_done) g_pq_done = ticket; g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
+          +        pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = NO; if (fxs) fxs->busy = NO; if (ticket > g_pq_done) g_pq_done = ticket;
+          +        if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket;
+          +        g_pq_inflight--; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
+               });
+               pthread_mutex_lock(&g_pq_mu); if (aa) aa->busy = YES; if (fxs) fxs->busy = YES; g_pq_inflight++; pthread_mutex_unlock(&g_pq_mu);
+               if (g_m3) { if (mdr) [cb3 presentDrawable:mdr]; present_m3(cb3, dr, ticket, period, target_ts); m3_commit(cb3, o, nil, 0); }
+          diff --git a/graphics/nvn/tests/present_alloc_fixture.c b/graphics/nvn/tests/present_alloc_fixture.c
+          new file mode 100644
+          index 00000000..b1029709
+          --- /dev/null
+          +++ b/graphics/nvn/tests/present_alloc_fixture.c
+          @@ -0,0 +1,53 @@
+          +// SPDX-License-Identifier: Apache-2.0
+          +// Copyright 2026 S2Arm contributors
+          +// The Python probe inserts the production statements; no duplicate wait policy.
+          +#include <stdint.h>
+          +#include <stdio.h>
+          +#include <string.h>
+          +#include <setjmp.h>
+          +static uint64_t g_present_alloc_fence[3], g_present_alloc_done[3], g_pq_done;
+          +static int g_pq_mu, g_pq_cv, g_pq_inflight, broadcasts, checks, failed;
+          +static jmp_buf waited;
+          +typedef struct { int busy; } Slot;
+          +#define NO 0
+          +#define DM_BLOCK_BEGIN() ((void)0)
+          +#define DM_BLOCK_END() ((void)0)
+          +static void pthread_mutex_lock(int *m) { (void)m; }
+          +static void pthread_mutex_unlock(int *m) { (void)m; }
+          +static void pthread_cond_broadcast(int *c) { (void)c; broadcasts++; }
+          +static void pthread_cond_wait(int *c, int *m) { (void)c; (void)m; longjmp(waited, 1); }
+          +static int reusable(int alloc_i) {
+          +    if (setjmp(waited)) return 0;
+          +    /* PRODUCTION_WAIT */
+          +    return 1;
+          +}
+          +static void completed(int alloc_i, uint64_t ticket, Slot *aa, Slot *fxs) {
+          +    (void)alloc_i; // Baseline feedback does not yet account for an individual slot.
+          +    /* PRODUCTION_FEEDBACK */
+          +}
+          +static void check(const char *name, int ok) { checks++; failed += !ok; printf("%s %s\n", ok ? "PASS" : "FAIL", name); }
+          +static void reset(void) {
+          +    memset(g_present_alloc_fence, 0, sizeof g_present_alloc_fence);
+          +    memset(g_present_alloc_done, 0, sizeof g_present_alloc_done);
+          +    g_pq_done = 0; g_pq_inflight = 0; broadcasts = 0;
+          +}
+          +int main(void) {
+          +    reset(); check("unused-slot", reusable(1));
+          +    g_present_alloc_fence[1] = 1; g_pq_done = 3;
+          +    check("dropped-ticket", !reusable(1)); // tickets 1,3,4; 1 is still on GPU
+          +    reset(); g_present_alloc_fence[2] = 5; g_pq_done = 7;
+          +    check("contiguous-tickets", !reusable(2)); // tickets 5,6,7,8
+          +    reset(); g_present_alloc_fence[1] = 1; g_pq_done = 4;
+          +    check("skipped-present", !reusable(1)); // skipped ticket 4 cannot retire 1
+          +    g_pq_inflight = 2; completed(0, 3, NULL, NULL);
+          +    check("other-slot-feedback", !reusable(1));
+          +    Slot aa = {1}, fx = {1}; completed(1, 1, &aa, &fx);
+          +    check("own-feedback", reusable(1));
+          +    check("queue-progress-monotonic", g_pq_done == 4);
+          +    check("slot-effects", !aa.busy && !fx.busy && g_pq_inflight == 0 && broadcasts == 2);
+          +    g_present_alloc_fence[1] = 7; g_present_alloc_done[1] = 7;
+          +    completed(1, 4, NULL, NULL);
+          +    check("old-feedback-monotonic", reusable(1));
+          +    printf("Portable present accounting: %d checks, %d failures; Metal NOT TESTED\n", checks, failed);
+          +    return failed != 0;
+          +}
+          diff --git a/graphics/nvn/tests/present_alloc_probe.py b/graphics/nvn/tests/present_alloc_probe.py
+          new file mode 100644
+          index 00000000..5aba0c9c
+          --- /dev/null
+          +++ b/graphics/nvn/tests/present_alloc_probe.py
+          @@ -0,0 +1,56 @@
+          +#!/usr/bin/env python3
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Execute production present wait/feedback statements as portable C.
+          +
+          +This verifies ticket lifetime accounting, not Metal or pthread scheduling.
+          +The native t_nvn_present_alloc test separately exercises real GPU completion.
+          +"""
+          +import argparse
+          +import pathlib
+          +import re
+          +import subprocess
+          +import tempfile
+          +
+          +
+          +def extract(source):
+          +    start = source.index('    if (g_present_alloc_fence[alloc_i]) {')
+          +    end = source.index('\n    }', start) + len('\n    }')
+          +    wait = source[start:end]
+          +    feedback_start = source.index('fb_add(o, ^(id<MTL4CommitFeedback> f) {', end)
+          +    feedback_end = source.index('\n    });', feedback_start)
+          +    feedback = source[feedback_start:feedback_end]
+          +    start = feedback.index('pthread_mutex_lock(&g_pq_mu);')
+          +    end = feedback.index('pthread_mutex_unlock(&g_pq_mu);', start) + len('pthread_mutex_unlock(&g_pq_mu);')
+          +    return wait, feedback[start:end]
+          +
+          +
+          +def main():
+          +    ap = argparse.ArgumentParser(description=__doc__)
+          +    ap.add_argument('--source', type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[1] / 'gfx/nvn/nvn_mtl.m')
+          +    ap.add_argument('--cc', default='cc')
+          +    ap.add_argument('--expect-old-bug', action='store_true')
+          +    args = ap.parse_args()
+          +    wait, feedback = extract(args.source.read_text(encoding='utf-8'))
+          +    fixture = pathlib.Path(__file__).with_name('present_alloc_fixture.c').read_text(encoding='utf-8')
+          +    unit = fixture.replace('/* PRODUCTION_WAIT */', wait).replace('/* PRODUCTION_FEEDBACK */', feedback)
+          +    with tempfile.TemporaryDirectory(prefix='s2a-present-alloc-') as tmp:
+          +        src, exe = pathlib.Path(tmp) / 'probe.c', pathlib.Path(tmp) / 'probe.exe'
+          +        src.write_text(unit, encoding='utf-8')
+          +        subprocess.run([args.cc, '-std=c11', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(exe)], check=True)
+          +        run = subprocess.run([str(exe)], capture_output=True, text=True, timeout=10)
+          +    print(run.stdout, end='')
+          +    if run.stderr:
+          +        print(run.stderr, end='')
+          +    if args.expect_old_bug:
+          +        expected = {'dropped-ticket', 'contiguous-tickets', 'skipped-present', 'other-slot-feedback', 'old-feedback-monotonic'}
+          +        failed = set(re.findall(r'^FAIL (\S+)$', run.stdout, re.MULTILINE))
+          +        if run.returncode == 1 and failed == expected:
+          +            print('PASS baseline negative control: exactly five lifetime-accounting cases rejected')
+          +            return 0
+          +        raise SystemExit('Negative control did not reproduce exactly the expected old bug')
+          +    return run.returncode
+          +
+          +
+          +if __name__ == '__main__':
+          +    raise SystemExit(main())
+          diff --git a/graphics/nvn/tests/t_nvn_be.c b/graphics/nvn/tests/t_nvn_be.c
+          index bf4df639..e8644ac6 100644
+          --- a/graphics/nvn/tests/t_nvn_be.c
+          +++ b/graphics/nvn/tests/t_nvn_be.c
+          @@ -6,6 +6,11 @@
+           
+           int main(void) {
+               static const struct { const char *env; int os26, family4, ios26x, want; const char *why; } c[] = {
+          +        {"mtl4-test", 1, 1, 1, NVN_BE_MTL4, "EXPERIMENTAL NXGAL_BE=mtl4-test: iOS 26 compositor safety not verified"},
+          +        {"mtl4-test", 1, 1, 0, NVN_BE_MTL4, "EXPERIMENTAL NXGAL_BE=mtl4-test"},
+          +        {"mtl4-test", 0, 1, 1, NVN_BE_MTL3, "system below macOS / iOS 26"},
+          +        {"mtl4-test", 1, 0, 1, NVN_BE_MTL3, "GPU not in the Metal 4 family"},
+          +        {"MTL4-TEST", 1, 1, 1, NVN_BE_MTL3, "iOS 26: no detached-layer direct present (backboardd add_shared_event assert, #311), Metal 3"},
+                   {NULL, 1, 1, 0, NVN_BE_MTL4, "GPU in the Metal 4 family"},        // 26 起、M1 / A14 起：缺省 Metal 4
+                   {"mtl3", 1, 1, 0, NVN_BE_MTL3, "forced by NXGAL_BE=mtl3"},         // 26 上强制（A/B）
+                   {"mtl4", 1, 1, 0, NVN_BE_MTL4, "GPU in the Metal 4 family"},       // 只有 mtl3 才强制，与 gal 同
+          diff --git a/graphics/nvn/tests/t_nvn_present_alloc.m b/graphics/nvn/tests/t_nvn_present_alloc.m
+          new file mode 100644
+          index 00000000..5a8c0fe9
+          --- /dev/null
+          +++ b/graphics/nvn/tests/t_nvn_present_alloc.m
+          @@ -0,0 +1,122 @@
+          +// SPDX-License-Identifier: MIT
+          +// Copyright (c) 2026 seedds
+          +// Adapted for S2Arm 0.4.3; original license: ../LICENSE.
+          +// Upstream: seedds/nxnative@82ab25b40b75b3b7ce7e1da614ea15f231e8a029.
+          +// Display-link presents with the GPU held back: a present must not reset a command allocator whose own present has not run yet. Real Metal 4 queue and offscreen
+          +// drawables; the link's callback is called by hand (no window, no game files). Two cases: a dropped frame (two presents in flight) and one frame per tick (three in flight).
+          +#include "../gfx/nvn/nvn_mtl.m"
+          +@interface FakeLinkUpdate : NSObject
+          +@property id<CAMetalDrawable> drawable;
+          +@property CFTimeInterval targetPresentationTimestamp;
+          +@end
+          +@implementation FakeLinkUpdate
+          +@end
+          +static CAMetalLayer *g_test_layer;
+          +__attribute__((visibility("default"))) void *s2a_mac_front_layer(void) { return (__bridge void *)g_test_layer; }
+          +static int checks, failed;
+          +#define CHECK(name, ok) do { int pass = !!(ok); checks++; failed += !pass; printf("%s: %s\n", name, pass ? "PASS" : "FAIL"); } while (0)
+          +static tex_t source(unsigned serial, uint8_t left, uint8_t right) {   // 8x8 grey, the left four columns one value and the right four another
+          +    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:8 height:8 mipmapped:NO];
+          +    d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageShaderRead;
+          +    id<MTLTexture> mt = [g_dev newTextureWithDescriptor:d]; uint8_t bytes[256];
+          +    for (int i = 0; i < 64; i++) { uint8_t v = i % 8 < 4 ? left : right; bytes[4 * i] = bytes[4 * i + 1] = bytes[4 * i + 2] = v; bytes[4 * i + 3] = 255; }
+          +    [mt replaceRegion:MTLRegionMake2D(0, 0, 8, 8) mipmapLevel:0 withBytes:bytes bytesPerRow:32];
+          +    tex_t t = {.magic=MAGIC('T','E','X',0), .serial=serial};
+          +    t.d.width = t.d.height = 8; t.d.depth = t.d.levels = t.d.samples = 1;
+          +    t.d.target = NVN_TEXTURE_TARGET_2D; t.d.format = NVN_FORMAT_RGBA8;
+          +    serial_put(t.serial, mt); res_add(mt); res_commit(); return t;
+          +}
+          +static CAMetalLayer *offscreen_layer(void) {
+          +    CAMetalLayer *l = [CAMetalLayer layer]; l.device = g_dev; l.pixelFormat = MTLPixelFormatBGRA8Unorm; l.framebufferOnly = NO; l.drawableSize = CGSizeMake(8, 8); return l;
+          +}
+          +// Every present gets a drawable of its own layer. With all drawables from one offscreen layer, 1 of 100 runs under CPU load got ticket 1's IOSurface back from
+          +// nextDrawable while the gate still held ticket 1's present, and ticket 4 then drew over the picture this test reads back
+          +static NSMutableArray *g_layers;
+          +static id<CAMetalDrawable> drawable(void) {
+          +    CAMetalLayer *l = offscreen_layer(); if (!g_m3) [g_q4 addResidencySet:l.residencySet]; [g_layers addObject:l]; id<CAMetalDrawable> dr = [l nextDrawable]; if (!dr) { fputs("FAIL missing offscreen drawable\n", stderr); exit(1); } return dr;
+          +}
+          +static NvMetalDisplayLinkDelegate *g_delegate;
+          +static id<CAMetalDrawable> tick_with(id<CAMetalDrawable> dr) {   // one display-link callback (it does not look at the link)
+          +    FakeLinkUpdate *u = [FakeLinkUpdate new]; u.drawable = dr; u.targetPresentationTimestamp = CACurrentMediaTime() + 0.016;
+          +    [g_delegate metalDisplayLink:(CAMetalDisplayLink *)(id)u needsUpdate:(CAMetalDisplayLinkUpdate *)u];
+          +    return dr;
+          +}
+          +static id<CAMetalDrawable> tick(void) { return tick_with(drawable()); }
+          +// The tick that lands on a used allocator runs on its own thread, so the test sees whether it waits; its drawable is taken before the thread starts
+          +static id<CAMetalDrawable> g_held; static dispatch_semaphore_t g_held_done;
+          +static void *held_tick(void *arg) { (void)arg; @autoreleasepool { tick_with(g_held); } dispatch_semaphore_signal(g_held_done); return NULL; }
+          +static void reuse_case(id<CAMetalDrawable> dr, id<MTLSharedEvent> gate, uint64_t open, uint64_t ticket, int inflight, uint64_t old) {
+          +    char name[160];
+          +    g_held = dr; g_held_done = dispatch_semaphore_create(0); pthread_t th; pthread_create(&th, NULL, held_tick, NULL);
+          +    int returned = dispatch_semaphore_wait(g_held_done, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_MSEC)) == 0;
+          +    pthread_mutex_lock(&g_pq_mu); int inside = g_pq_read == ticket && g_pq_inflight == inflight; pthread_mutex_unlock(&g_pq_mu);
+          +    snprintf(name, sizeof name, "ticket %llu reached present_now", (unsigned long long)ticket); CHECK(name, returned || inside);
+          +    snprintf(name, sizeof name, "allocator %llu is not reused while ticket %llu is on the GPU", (unsigned long long)(ticket % 3), (unsigned long long)old); CHECK(name, !returned);
+          +    gate.signaledValue = open;
+          +    if (!returned) returned = dispatch_semaphore_wait(g_held_done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0;
+          +    snprintf(name, sizeof name, "ticket %llu is presented once the GPU gets to ticket %llu", (unsigned long long)ticket, (unsigned long long)old); CHECK(name, returned);
+          +    if (!returned) { fputs("FAIL present thread did not resume\n", stderr); exit(1); }
+          +    pthread_join(th, NULL);
+          +    pthread_mutex_lock(&g_pq_mu); struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_sec += 5;
+          +    while (g_pq_inflight && pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts) != ETIMEDOUT) {}
+          +    int left = g_pq_inflight; uint64_t done = g_pq_done; pthread_mutex_unlock(&g_pq_mu);
+          +    CHECK("every present completed", left == 0 && done == ticket);
+          +}
+          +static int bad_pixels(id<MTLTexture> t, uint8_t left, uint8_t right) {
+          +    id<MTLBuffer> out = [g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
+          +    id<MTLCommandBuffer> cb = [g_q commandBuffer]; id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+          +    [b copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(8, 8, 1)
+          +        toBuffer:out destinationOffset:0 destinationBytesPerRow:32 destinationBytesPerImage:256];
+          +    [b endEncoding]; [cb commit]; [cb waitUntilCompleted];
+          +    const uint8_t *p = out.contents; int bad = 0;
+          +    for (int i = 0; i < 64; i++) { uint8_t v = i % 8 < 4 ? left : right; bad += p[4 * i] != v || p[4 * i + 1] != v || p[4 * i + 2] != v; }
+          +    if (bad) { printf("first row:"); for (int i = 0; i < 8; i++) printf(" %u", p[4 * i]); printf(" (want %u x4, %u x4)\n", left, right); }
+          +    return bad;
+          +}
+          +static void hold_gpu(id<MTLSharedEvent> gate, uint64_t value) {
+          +    if (!g_m3) [g_q4 waitForEvent:gate value:value];
+          +    else { id<MTLCommandBuffer> cb = [g_q3 commandBuffer]; [cb encodeWaitForEvent:gate value:value]; [cb commit]; }
+          +}
+          +int main(void) { @autoreleasepool {
+          +    alarm(45); setbuf(stdout, NULL);
+          +    setenv("DM_PRESENT_FIFO", "1", 1);
+          +    setenv("S2A_ANTI_ALIASING", "None", 1);
+          +    setenv("S2A_SCALING_FILTER", "Bilinear", 1);
+          +    setenv("S2A_RES_SCALE", "1", 1);
+          +    mtl_init();
+          +    g_test_layer = offscreen_layer(); g_layers = [NSMutableArray new];
+          +    // Display-link mode without a link thread: link_sync sees a started link that is not there yet, the present thread leaves the queue to the callback
+          +    g_dm_present_link = 1; g_link_applied = 1; g_link_started = 1; g_link_owns_layer = 1; g_delegate = [NvMetalDisplayLinkDelegate new];
+          +    tex_t a = source(91001, 50, 150), b = source(91002, 100, 100), c = source(91003, 200, 200);
+          +    static const int left_half[4] = {0, 0, 4, 8};
+          +    id<MTLSharedEvent> gate = [g_dev newSharedEvent];
+          +    // Every callback moves g_pq_done to ticket - 1, so it is no guard for the allocator: the presents below wait only if the allocator's own completion is checked.
+          +    // On main both cases fail the reuse check, and the earlier ticket's drawable reads back black (0 in every pixel): its command buffer was encoded again before the GPU ran it
+          +
+          +    // A dropped frame: ticket 1 on allocator 1, then 3 (2 dropped) on allocator 0, then 4 on allocator 1 again with two presents in flight
+          +    hold_gpu(gate, 1);   // nothing committed to the Metal 4 queue from here runs until the gate opens
+          +    present_enqueue(&a, 1. / 60, NULL, 0);
+          +    id<CAMetalDrawable> first = tick();
+          +    present_enqueue(&b, 1. / 60, NULL, 0); present_enqueue(&b, 1. / 60, NULL, 0); present_enqueue(&c, 1. / 60, left_half, 0);
+          +    tick();
+          +    printf("after the drop: read %llu, done %llu, in flight %d\n", (unsigned long long)g_pq_read, (unsigned long long)g_pq_done, g_pq_inflight);
+          +    CHECK("ticket 1 has not completed", g_pq_inflight == 2);
+          +    reuse_case(drawable(), gate, 1, 4, 2, 1);
+          +    int bad = bad_pixels(first.texture, 50, 150); printf("ticket 1 drawable: %d of 64 pixels wrong\n", bad);
+          +    CHECK("ticket 1 shows its own picture", bad == 0);
+          +
+          +    // One frame per tick, nothing dropped: tickets 5, 6 and 7 on allocators 2, 0 and 1, then 8 on allocator 2 again with three presents in flight
+          +    hold_gpu(gate, 2);
+          +    present_enqueue(&a, 1. / 60, NULL, 0); id<CAMetalDrawable> fifth = tick();
+          +    present_enqueue(&b, 1. / 60, NULL, 0); tick();
+          +    present_enqueue(&b, 1. / 60, NULL, 0); tick();
+          +    present_enqueue(&c, 1. / 60, left_half, 0);
+          +    printf("one per tick: read %llu, done %llu, in flight %d, dropped %llu\n", (unsigned long long)g_pq_read, (unsigned long long)g_pq_done, g_pq_inflight, (unsigned long long)g_link_dropped);
+          +    CHECK("tickets 5-7 have not completed", g_pq_inflight == 3 && g_link_dropped == 1);
+          +    reuse_case(drawable(), gate, 2, 8, 3, 5);
+          +    CHECK("no frame dropped after ticket 2", g_link_dropped == 1);
+          +    bad = bad_pixels(fifth.texture, 50, 150); printf("ticket 5 drawable: %d of 64 pixels wrong\n", bad);
+          +    CHECK("ticket 5 shows its own picture", bad == 0);
+          +    CHECK("no GPU error", !mtl_gpu_halted());
+          +    printf("present allocators: %d checks, %d failed\n", checks, failed); return failed != 0;
+          +} }
           diff --git a/graphics/nvn/tests/t_nvn_warm_runtime.m b/graphics/nvn/tests/t_nvn_warm_runtime.m
           new file mode 100644
           index 00000000..a95d272a
@@ -223,6 +618,66 @@ jobs:
           +    printf("PASS runtime-only %s: fallback loaded, stale fingerprint rejected, GPU output 7, hits %llu / compiled %llu / written %llu\n", argv[1], (unsigned long long)g_par_hits, (unsigned long long)g_par_misses, (unsigned long long)g_par_written);
           +    return 0;
           +} }
+          diff --git a/graphics/nvn/tests/test_present_alloc_probe.py b/graphics/nvn/tests/test_present_alloc_probe.py
+          new file mode 100644
+          index 00000000..2ec2c6a6
+          --- /dev/null
+          +++ b/graphics/nvn/tests/test_present_alloc_probe.py
+          @@ -0,0 +1,54 @@
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Negative controls for the real production statements, with a portable C compiler."""
+          +import os
+          +import pathlib
+          +import subprocess
+          +import sys
+          +import tempfile
+          +import unittest
+          +
+          +ROOT = pathlib.Path(__file__).resolve().parents[3]
+          +PROBE = ROOT / 'graphics/nvn/tests/present_alloc_probe.py'
+          +SOURCE = ROOT / 'graphics/nvn/gfx/nvn/nvn_mtl.m'
+          +
+          +
+          +class PresentAccounting(unittest.TestCase):
+          +    def run_source(self, source):
+          +        with tempfile.TemporaryDirectory() as tmp:
+          +            path = pathlib.Path(tmp) / 'nvn_mtl.m'
+          +            path.write_text(source, encoding='utf-8')
+          +            return subprocess.run([sys.executable, str(PROBE), '--cc', os.environ.get('CC', 'cc'), '--source', str(path)],
+          +                                  capture_output=True, text=True, timeout=30)
+          +
+          +    def test_production(self):
+          +        run = self.run_source(SOURCE.read_text(encoding='utf-8'))
+          +        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+          +        self.assertIn('9 checks, 0 failures', run.stdout)
+          +
+          +    def test_old_global_wait_reproduces(self):
+          +        source = SOURCE.read_text(encoding='utf-8').replace(
+          +            'while (g_present_alloc_done[alloc_i] < g_present_alloc_fence[alloc_i])',
+          +            'while (g_pq_done < g_present_alloc_fence[alloc_i])')
+          +        run = self.run_source(source)
+          +        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+          +        self.assertIn('FAIL dropped-ticket', run.stdout)
+          +        self.assertIn('FAIL contiguous-tickets', run.stdout)
+          +
+          +    def test_missing_feedback_blocks_reuse(self):
+          +        source = SOURCE.read_text(encoding='utf-8').replace(
+          +            'if (ticket > g_present_alloc_done[alloc_i]) g_present_alloc_done[alloc_i] = ticket;', '')
+          +        run = self.run_source(source)
+          +        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+          +        self.assertIn('FAIL own-feedback', run.stdout)
+          +
+          +    def test_wrong_slot_feedback_rejected(self):
+          +        source = SOURCE.read_text(encoding='utf-8').replace(
+          +            'g_present_alloc_done[alloc_i] = ticket;', 'g_present_alloc_done[(alloc_i + 1) % 3] = ticket;')
+          +        run = self.run_source(source)
+          +        self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+          +        self.assertIn('FAIL other-slot-feedback', run.stdout)
+          +
+          +
+          +if __name__ == '__main__':
+          +    unittest.main()
           diff --git a/graphics/nvn/tests/test_warm_paths_probe.py b/graphics/nvn/tests/test_warm_paths_probe.py
           new file mode 100644
           index 00000000..6d03fcbb
@@ -1518,6 +1973,33 @@ jobs:
           +	$(CC) $(CFLAGS) $(NATIVE_INC) -DS2A_UNIT_TEST -pthread -o $(BUILD)/tests/t_fps_compensated runtime/tests/t_fps_compensated.c runtime/src/fps.c
           +	$(BUILD)/tests/t_fps_compensated runtime/fps/cd57b23fa4bbad65.tsv runtime/fps/de0b6ac4efc1dda7.tsv
           +TEST_TARGETS += native-test-fps_compensated
+          diff --git a/runtime/tests/mk/nvn_present_alloc.mk b/runtime/tests/mk/nvn_present_alloc.mk
+          new file mode 100644
+          index 00000000..6f56320b
+          --- /dev/null
+          +++ b/runtime/tests/mk/nvn_present_alloc.mk
+          @@ -0,0 +1,21 @@
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +NATIVE_TEST_OWN += nvn_present_alloc
+          +.PHONY: native-test-nvn_present_accounting
+          +native-test-nvn_present_accounting:
+          +	python3 graphics/nvn/tests/present_alloc_probe.py --cc "$(CC)"
+          +TEST_TARGETS += native-test-nvn_present_accounting
+          +ifeq ($(S2A_UNAME),Darwin)
+          +$(BUILD)/tests/t_nvn_present_alloc: graphics/nvn/tests/t_nvn_present_alloc.m $(NVN_MTL_DEPS) $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN)
+          +	$(CC) $(CFLAGS) -std=gnu11 -fobjc-arc -Wno-unused-function -Wno-unguarded-availability-new -Wno-unguarded-availability \
+          +	  $(NATIVE_INC) -Igraphics/nvn/host -Igraphics/nvn/gfx/nvn -Igraphics/nvn/gfx/nvn/include -Igraphics/nvn/third_party/vulkan-headers/include \
+          +	  -o $@ graphics/nvn/tests/t_nvn_present_alloc.m $(NVN_TEST_HOST_OBJS) $(NVN_TEST_LIB) $(NVN_TEST_WIDEN) \
+          +	  -Wl,-rpath,@executable_path/nvn/widen $(NVN_TEST_WEAK) \
+          +	  -framework Metal -framework Foundation -framework QuartzCore -framework CoreGraphics \
+          +	  -framework ImageIO -framework UniformTypeIdentifiers -lc++
+          +.PHONY: native-test-nvn_present_alloc
+          +native-test-nvn_present_alloc: $(BUILD)/tests/t_nvn_present_alloc
+          +	NXGAL_BE=mtl4-test MTL_DEBUG_LAYER=1 timeout 60 $(BUILD)/tests/t_nvn_present_alloc
+          +	NXGAL_BE=mtl3 MTL_DEBUG_LAYER=1 timeout 60 $(BUILD)/tests/t_nvn_present_alloc
+          +TEST_TARGETS += native-test-nvn_present_alloc
+          +endif
           diff --git a/runtime/tests/mk/nvn_warm_runtime.mk b/runtime/tests/mk/nvn_warm_runtime.mk
           new file mode 100644
           index 00000000..7f853708
@@ -2314,18 +2796,127 @@ jobs:
           +
           +if __name__ == '__main__':
           +    unittest.main()
+          diff --git a/tools/metal4_test_workflow.py b/tools/metal4_test_workflow.py
+          new file mode 100644
+          index 00000000..b8a6b081
+          --- /dev/null
+          +++ b/tools/metal4_test_workflow.py
+          @@ -0,0 +1,103 @@
+          +#!/usr/bin/env python3
+          +# SPDX-License-Identifier: Apache-2.0
+          +# Copyright 2026 S2Arm contributors
+          +"""Generate the isolated Metal 4 workflow from the existing daily workflow.
+          +
+          +Run after git add: the embedded patch and tree hash both describe the index.
+          +The output is kept outside this source tree to avoid a self-referencing hash.
+          +"""
+          +import argparse
+          +import pathlib
+          +import re
+          +import subprocess
+          +
+          +ROOT = pathlib.Path(__file__).resolve().parents[1]
+          +BASE = '3ddf11c00202745867391069873419d89e7c72e4'
+          +ARTIFACT = 'S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag'
+          +
+          +
+          +def replace_once(text, old, new):
+          +    if text.count(old) != 1:
+          +        raise ValueError(f'Expected one template occurrence: {old[:120]}')
+          +    return text.replace(old, new, 1)
+          +
+          +
+          +def git(*args):
+          +    return subprocess.check_output(['git', '-c', 'core.quotepath=false', *args], cwd=ROOT).decode('utf-8').strip()
+          +
+          +
+          +def main():
+          +    ap = argparse.ArgumentParser(description=__doc__)
+          +    ap.add_argument('--template', type=pathlib.Path, required=True)
+          +    ap.add_argument('--output', type=pathlib.Path, required=True)
+          +    args = ap.parse_args()
+          +    if args.output.resolve().is_relative_to(ROOT):
+          +        raise ValueError('Workflow output must be outside the source tree')
+          +    tree = git('write-tree')
+          +    patch = git('diff', '--cached', '--binary', BASE, '--') + '\n'
+          +    y = args.template.read_text(encoding='utf-8')
+          +    opening = '          cat > "$RUNNER_TEMP/s2arm-2x.patch" <<\'S2ARM_2X_PATCH\'\n'
+          +    closing = '          S2ARM_2X_PATCH\n'
+          +    y, count = re.subn(r'^          git add -- .+$', '          git add -A', y, count=1, flags=re.MULTILINE)
+          +    if count != 1:
+          +        raise ValueError('Missing source snapshot staging step')
+          +    y, count = re.subn(r'          test "\$tree" = "[0-9a-f]{40}"', f'          test "$tree" = "{tree}"', y, count=1)
+          +    if count != 1:
+          +        raise ValueError('Missing source tree guard')
+          +    y = replace_once(y, 'name: S2Arm 0.4.3 Shell 2x PSOFix LocalDiag AirPlaySpeed (macOS)',
+          +                     'name: S2Arm 0.4.3 Metal4 Test LocalDiag (macOS)')
+          +    y = replace_once(y, "branches: ['codex/s2arm-043-custom']", "branches: ['test/metal4-present-completion']")
+          +    y = replace_once(y, 'group: s2arm-shell-043-daily', 'group: s2arm-shell-043-metal4-test')
+          +    y = y.replace('S2Arm-0.4.3-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed', ARTIFACT)
+          +    y = replace_once(y, 'Apply PSO and local diagnostics fixes; check Foundation regression',
+          +                     'Apply private fixes and Metal4 experiment; check Foundation regression')
+          +    y = replace_once(y, "export GIT_AUTHOR_DATE='2026-11-16T08:00:00Z' GIT_COMMITTER_DATE='2026-11-16T08:00:00Z'",
+          +                     "export GIT_AUTHOR_DATE='2026-11-17T08:00:00Z' GIT_COMMITTER_DATE='2026-11-17T08:00:00Z'")
+          +    y = replace_once(y, '-m \'S2Arm 0.4.3 official render scaling with prewarm, local diagnostics, external pacing and compensated timing; upstream ',
+          +                     '-m \'S2Arm 0.4.3 private Metal4 allocator completion experiment, existing daily fixes preserved; upstream ')
+          +    marker = '      - name: Verify local diagnostics export routes and baseline negative control\n'
+          +    step = '''      - name: Verify present lifetime accounting and experimental backend selection
+          +        working-directory: source
+          +        run: |
+          +          set -euo pipefail
+          +          logs="$RUNNER_TEMP/s2arm-output/logs"
+          +          python3 graphics/nvn/tests/present_alloc_probe.py --cc clang --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/present-negative.log"
+          +          CC=clang python3 -B -m unittest discover -s graphics/nvn/tests -p test_present_alloc_probe.py 2>&1 | tee "$logs/present-accounting.log"
+          +          "$S2A_GMAKE" CC=clang native-test-nvn_be 2>&1 | tee "$logs/metal4-selection.log"
+          +          echo 'Portable present accounting: 9 checks plus 3 mutation controls PASS. Backend selection: 19 cases PASS. GPU and iPhone verification pending.' > "$logs/metal4-test-status.txt"
+          +
+          +'''
+          +    y = replace_once(y, marker, step + marker)
+          +    y = replace_once(y, 'build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"',
+          +                     'build/tests/t_nvn_warm_runtime build/tests/t_nvn_present_alloc 2>&1 | tee "$logs/rscale-native-build.log"')
+          +    y = replace_once(y, 'native-test-nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-run.log"',
+          +                     'native-test-nvn_warm_runtime native-test-nvn_present_alloc 2>&1 | tee "$logs/rscale-native-run.log"\n'
+          +                     '            echo "Real present allocator GPU regression: PASS (Metal 3 and Metal 4). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"')
+          +    y = replace_once(y, '            echo \'::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.\'',
+          +                     '            echo \'::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.\'\n'
+          +                     '            echo "Real present allocator GPU regression: COMPILED; execution SKIPPED (runner GPU capabilities). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"')
+          +    y = replace_once(y, '          cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"',
+          +                     '          cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"\n'
+          +                     '          cat "$logs/metal4-test-status.txt" >> "$GITHUB_STEP_SUMMARY"')
+          +    y = replace_once(y, '            echo "Custom build: S2Arm 0.4.3 official render scaling + prewarm fix2 + local diagnostics + slow-display routing + BOTW timing; default 1x"',
+          +                     '            echo "Custom build: S2Arm 0.4.3 Metal4 experiment + existing private daily fixes; default iOS 26 backend stays Metal3"\n'
+          +                     '            echo "Opt-in: NXGAL_BE=mtl4-test; rollback: NXGAL_BE=mtl3. This does not prove iOS compositor issue #311 is fixed."\n'
+          +                     '            cat "$output/logs/metal4-test-status.txt"')
+          +    y = replace_once(y, '          cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"',
+          +                     '          cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"\n'
+          +                     '          cp "$output/logs/metal4-test-status.txt" "$output/artifact/metal4-test-status.txt"')
+          +    y = replace_once(y, 'shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch ',
+          +                     'shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch metal4-test-status.txt ')
+          +    y = replace_once(y, '          echo \'Shell build completed. Download ',
+          +                     '          echo \'EXPERIMENTAL: do not replace the daily installation. Opt in with NXGAL_BE=mtl4-test only after assembling this Shell; remove it or set mtl3 to roll back. #311 and real FPS remain unverified.\' >> "$GITHUB_STEP_SUMMARY"\n'
+          +                     '          echo \'Shell build completed. Download ')
+          +    # Embed last: this generator is itself in the patch and contains template
+          +    # strings. Earlier replacement would accidentally edit its quoted source.
+          +    begin, end = y.index(opening) + len(opening), y.index(closing)
+          +    y = y[:begin] + ''.join('          ' + line + '\n' for line in patch.splitlines()) + y[end:]
+          +    args.output.write_text(y, encoding='utf-8', newline='\n')
+          +    print(f'Workflow: {args.output}\nSource tree: {tree}\nArtifact: {ARTIFACT}')
+          +
+          +
+          +if __name__ == '__main__':
+          +    main()
           S2ARM_2X_PATCH
           git apply --check "$RUNNER_TEMP/s2arm-2x.patch"
           git apply "$RUNNER_TEMP/s2arm-2x.patch"
-          git add -- 'docs/坑记录.md' graphics/nvn/gfx/nvn/nvn_mtl.m graphics/nvn/tests/t_nvn_warm_runtime.m graphics/nvn/tests/test_warm_paths_probe.py graphics/nvn/tests/warm_paths_fixture.m graphics/nvn/tests/warm_paths_probe.py ios/app_settings.m ios/diag.m ios/ext_display_policy.h ios/extdisplay.m ios/l10n/en.lproj/S2ArmHost.strings ios/l10n/es.lproj/S2ArmHost.strings ios/l10n/fr.lproj/S2ArmHost.strings ios/l10n/ja.lproj/S2ArmHost.strings ios/l10n/zh-Hans.lproj/S2ArmHost.strings ios/l10n/zh-Hant.lproj/S2ArmHost.strings pack/stage_inputs/shell.tsv runtime/fps/cd57b23fa4bbad65.tsv runtime/rewriter/rewriter.c runtime/src/fps.c runtime/tests/mk/diag_upload.mk runtime/tests/mk/ext_display_policy.mk runtime/tests/mk/fps_compensated.mk runtime/tests/mk/nvn_warm_runtime.mk runtime/tests/t_diag_upload.c runtime/tests/t_ext_display_policy.c runtime/tests/t_fps_compensated.c shell/Sources/S2ArmShellBridge/include/s2a_shell.h shell/Sources/S2ArmShellHost/S2ArmGuideView.swift shell/Sources/S2ArmShellHost/S2ArmShellHostModel.swift shell/Sources/ShellUI/Resources/Localizable.xcstrings shell/Sources/ShellUI/ShellSettingsView.swift tests/diag_localization_test.py tests/fps_botw_190_test.py
+          git add -A
           tree="$(git write-tree)"
-          test "$tree" = "58605645d81acd7db9d8c72cdf31183a03f38478"
+          test "$tree" = "19afe5264d199d7db339bddd881d76cd6767c7ef"
           # A parentless source snapshot keeps the matching assembly source bundle small
           # and self-contained. It is local to this runner and is never pushed upstream.
           export GIT_AUTHOR_NAME='S2Arm custom build' GIT_COMMITTER_NAME='S2Arm custom build'
           export GIT_AUTHOR_EMAIL='custom-build@localhost' GIT_COMMITTER_EMAIL='custom-build@localhost'
-          export GIT_AUTHOR_DATE='2026-11-16T08:00:00Z' GIT_COMMITTER_DATE='2026-11-16T08:00:00Z'
-          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.3 official render scaling with prewarm, local diagnostics, external pacing and compensated timing; upstream 3ddf11c00202745867391069873419d89e7c72e4')"
+          export GIT_AUTHOR_DATE='2026-11-17T08:00:00Z' GIT_COMMITTER_DATE='2026-11-17T08:00:00Z'
+          snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.3 private Metal4 allocator completion experiment, existing daily fixes preserved; upstream 3ddf11c00202745867391069873419d89e7c72e4')"
           git checkout -b s2arm-2x-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
           python3 pack/shell/closure.py pyimports
@@ -2335,6 +2926,16 @@ jobs:
           python3 graphics/nvn/tests/warm_paths_probe.py --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/prewarm-negative.log"
           python3 graphics/nvn/tests/warm_paths_probe.py 2>&1 | tee "$logs/prewarm-foundation.log"
           echo 'Foundation list selection: PASS (12 cases; baseline negative control). Extractor: 5 portable tests PASS. Metal archive roundtrip: pending. iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
+
+      - name: Verify present lifetime accounting and experimental backend selection
+        working-directory: source
+        run: |
+          set -euo pipefail
+          logs="$RUNNER_TEMP/s2arm-output/logs"
+          python3 graphics/nvn/tests/present_alloc_probe.py --cc clang --source "$RUNNER_TEMP/nvn_mtl-before-prewarm.m" --expect-old-bug 2>&1 | tee "$logs/present-negative.log"
+          CC=clang python3 -B -m unittest discover -s graphics/nvn/tests -p test_present_alloc_probe.py 2>&1 | tee "$logs/present-accounting.log"
+          "$S2A_GMAKE" CC=clang native-test-nvn_be 2>&1 | tee "$logs/metal4-selection.log"
+          echo 'Portable present accounting: 9 checks plus 3 mutation controls PASS. Backend selection: 19 cases PASS. GPU and iPhone verification pending.' > "$logs/metal4-test-status.txt"
 
       - name: Verify local diagnostics export routes and baseline negative control
         working-directory: source
@@ -2438,7 +3039,7 @@ jobs:
           echo 'S2ARM_CI_REVISION=4.0-prewarm-localdiag-airplay-speed1'
           logs="$RUNNER_TEMP/s2arm-output/logs"
           echo 'Metal fixture compilation: pending; GPU execution: pending' > "$logs/rscale-gpu-status.txt"
-          "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-build.log"
+          "$S2A_GMAKE" -j3 CC=clang build/tests/t_nvn_rscale build/tests/t_nvn_pkg_gpu_write build/tests/t_nvn_warm_runtime build/tests/t_nvn_present_alloc 2>&1 | tee "$logs/rscale-native-build.log"
           cat > "$RUNNER_TEMP/s2arm-metal-device.m" <<'METAL_DEVICE'
           #import <Foundation/Foundation.h>
           #import <Metal/Metal.h>
@@ -2477,18 +3078,21 @@ jobs:
           if [ "$device_status" -eq 77 ]; then
             echo 'Metal fixture compilation: PASS. GPU execution: SKIPPED (runner lacks required capabilities for the full Metal3/4 matrix; see rscale-device.log). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
             echo '::warning::Runner cannot execute the full Metal3/4 matrix. Native fixtures compiled; GPU behavior remains unverified.'
+            echo "Real present allocator GPU regression: COMPILED; execution SKIPPED (runner GPU capabilities). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"
             echo 'Foundation list selection: PASS (12 cases; baseline negative control). Metal archive roundtrip: COMPILED, EXECUTION SKIPPED (runner GPU capabilities). iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
           elif [ "$device_status" -ne 0 ]; then
             echo "::error::Metal device probe failed ($device_status)."
             exit "$device_status"
           else
             echo 'Metal fixture compilation: PASS. GPU execution: RUNNING.' > "$logs/rscale-gpu-status.txt"
-            "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_rscale native-test-nvn_pkg_gpu_write native-test-nvn_warm_runtime 2>&1 | tee "$logs/rscale-native-run.log"
+            "$S2A_GMAKE" CC=clang NVN_TEST_PREBUILT=1 native-test-nvn_rscale native-test-nvn_pkg_gpu_write native-test-nvn_warm_runtime native-test-nvn_present_alloc 2>&1 | tee "$logs/rscale-native-run.log"
+            echo "Real present allocator GPU regression: PASS (Metal 3 and Metal 4). iPhone NOT TESTED." >> "$logs/metal4-test-status.txt"
             echo 'Metal fixture compilation: PASS. GPU execution: PASS (upstream render-scale, package GPU-write and runtime-only PSO fixtures). iPhone gameplay: NOT TESTED.' | tee "$logs/rscale-gpu-status.txt"
             echo 'Foundation list selection: PASS (12 cases; baseline negative control). Metal runtime-only archive: PASS (two processes, write then hit, GPU output 7). iPhone gameplay: NOT TESTED.' > "$logs/prewarm-status.txt"
           fi
           cat "$logs/rscale-gpu-status.txt" >> "$GITHUB_STEP_SUMMARY"
           cat "$logs/prewarm-status.txt" >> "$GITHUB_STEP_SUMMARY"
+          cat "$logs/metal4-test-status.txt" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build Shell with the upstream entry point
         working-directory: source
@@ -2509,7 +3113,9 @@ jobs:
           # executable outside the bundle and seals the file manifest above.
           # Final app signing belongs to the sideloading stage, after assembly.
           {
-            echo "Custom build: S2Arm 0.4.3 official render scaling + prewarm fix2 + local diagnostics + slow-display routing + BOTW timing; default 1x"
+            echo "Custom build: S2Arm 0.4.3 Metal4 experiment + existing private daily fixes; default iOS 26 backend stays Metal3"
+            echo "Opt-in: NXGAL_BE=mtl4-test; rollback: NXGAL_BE=mtl3. This does not prove iOS compositor issue #311 is fixed."
+            cat "$output/logs/metal4-test-status.txt"
             echo "Upstream baseline: 3ddf11c00202745867391069873419d89e7c72e4"
             echo "Original aspect: turn off widescreen AND per-game force widescreen."
             cat "$output/logs/rscale-gpu-status.txt"
@@ -2530,19 +3136,21 @@ jobs:
           git bundle verify "$output/artifact/S2Arm-source.bundle"
           cp "$RUNNER_TEMP/s2arm-2x.patch" "$output/artifact/s2arm-2x.patch"
           cp "$output/logs/prewarm-status.txt" "$output/artifact/prewarm-status.txt"
+          cp "$output/logs/metal4-test-status.txt" "$output/artifact/metal4-test-status.txt"
           cp "$output/logs/diag-export-status.txt" "$output/artifact/diag-export-status.txt"
           cp "$output/logs/airplay-fps-status.txt" "$output/artifact/airplay-fps-status.txt"
           cp "$output/logs/rscale-gpu-status.txt" "$output/artifact/rscale-gpu-status.txt"
           cp "$output/logs/rscale-device.log" "$output/artifact/rscale-device.log"
           printf '0.4.3\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
-          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-0.4.3-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. AirPlay fallback, BOTW timing, GPU visuals and export UI remain to be verified on device. BOTW requires repackaging with this matching Engine; existing IPA modules do not gain compensation by replacing Shell alone.' >> "$GITHUB_STEP_SUMMARY"
+          shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch metal4-test-status.txt prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
+          echo 'EXPERIMENTAL: do not replace the daily installation. Opt in with NXGAL_BE=mtl4-test only after assembling this Shell; remove it or set mtl3 to roll back. #311 and real FPS remain unverified.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Shell build completed. Download S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag from Artifacts. Use its matching source bundle for IPA assembly; keep the original installed S2Arm intact. User baseline: 1x, handheld, original aspect ratio. Disable widescreen and per-game force widescreen. Official 2x remains optional. iOS diagnostics now export a local ZIP through the share sheet. AirPlay fallback, BOTW timing, GPU visuals and export UI remain to be verified on device. BOTW requires repackaging with this matching Engine; existing IPA modules do not gain compensation by replacing Shell alone.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.4.3-Shell-2x-PSOFix-LocalDiag-AirPlaySpeed
+          name: S2Arm-0.4.3-Shell-Metal4-Test-LocalDiag
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0

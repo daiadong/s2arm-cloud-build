@@ -4,7 +4,7 @@
 # Self-contained: the patch and matching-source packaging are included below.
 # GPU eligibility checks unified memory, Metal4 and residency creation.
 # Runtime-only PSO prewarm fix plus local iOS diagnostics export; source / closure checks stay enabled.
-name: S2Arm 0.4.3 Metal3 Cache Optimization Test LocalDiag (macOS)
+name: S2Arm 0.4.3 AirPlay Native Second Screen (macOS)
 
 on:
   workflow_dispatch:
@@ -3271,6 +3271,238 @@ jobs:
           snapshot="$(git commit-tree "$tree" -m 'S2Arm 0.4.3 Metal3 vertex conversion and texture serial cache experiment; daily fixes preserved; upstream 3ddf11c00202745867391069873419d89e7c72e4')"
           git checkout -b s2arm-metal3-opt-build "$snapshot"
           test -z "$(git status --porcelain --untracked-files=no)"
+
+          # ---- AirPlay second screen: 30 Hz takeover gated by the game frame rate ----
+          # 策略：24-59 Hz 外屏只在游戏目标帧率 <= 外屏刷新率时接管；60 帧游戏保持镜像，不变速。
+          python3 - <<'S2ARM_AIRPLAY_POLICY'
+          # -*- coding: utf-8 -*-
+          """Apply the AirPlay second-screen policy to an S2Arm 0.4.3 source tree.
+
+          Every anchor is asserted; a mismatch aborts instead of silently editing the
+          wrong place. Line endings of each file are preserved.
+          """
+          import sys
+          from pathlib import Path
+
+          ROOT = Path(".")
+
+
+          def sub(rel, old, new, count=1):
+              p = ROOT / rel
+              raw = p.read_bytes()
+              crlf = b"\r\n" in raw
+              s = raw.decode("utf-8").replace("\r\n", "\n")
+              got = s.count(old)
+              if got != count:
+                  sys.exit("AirPlay policy: %s: anchor occurs %d times, expected %d: %r"
+                           % (rel, got, count, old[:64]))
+              s = s.replace(old, new)
+              if crlf:
+                  s = s.replace("\n", "\r\n")
+              p.write_bytes(s.encode("utf-8"))
+              print("ok  %-44s (%d)" % (rel, count))
+
+
+          # ---------------------------------------------------------------- 1) policy header
+          sub("ios/ext_display_policy.h",
+              """// Whether a connected screen may own the game's presentation layer.
+          static inline int s2a_ext_native_allowed(long maximum_fps) {
+              return maximum_fps <= 0 || maximum_fps >= 60;
+          }""",
+              """// Whether a connected screen may own the game's presentation layer.
+          // 24-59 Hz screens (an AirPlay TV is usually 30 Hz) pass this hardware gate;
+          // ios/extdisplay.m additionally requires the game's own target frame rate not
+          // to exceed the screen's rate, otherwise a 60 fps game would be dragged down
+          // to 30 fps by the display link and the texture recycle.
+          static inline int s2a_ext_native_allowed(long maximum_fps) {
+              return maximum_fps <= 0 || maximum_fps >= 24;
+          }""")
+
+          # ---------------------------------------------------------------- 2) policy unit test
+          sub("runtime/tests/t_ext_display_policy.c",
+              """        {-1, 1}, {0, 1}, {24, 0}, {30, 0}, {50, 0}, {59, 0},
+                  {60, 1}, {90, 1}, {120, 1}""",
+              """        {-1, 1}, {0, 1}, {20, 0}, {23, 0}, {24, 1}, {30, 1},
+                  {50, 1}, {59, 1}, {60, 1}, {90, 1}, {120, 1}""")
+          sub("runtime/tests/t_ext_display_policy.c",
+              'printf("external screen policy: %d/9 PASS\\n", 9 - bad);',
+              'printf("external screen policy: %d/11 PASS\\n", 11 - bad);')
+
+          # ---------------------------------------------------------------- 3) extdisplay.m
+          sub("ios/extdisplay.m",
+              """#import <UIKit/UIKit.h>
+          #include <stdatomic.h>
+          #include "native.h"
+          #include "ext_display_policy.h\"""",
+              """#import <UIKit/UIKit.h>
+          #import <AVFoundation/AVFoundation.h>
+          #include <stdatomic.h>
+          #include "native.h"
+          #include "settings.h"
+          #include "ext_display_policy.h\"""")
+
+          sub("ios/extdisplay.m",
+              "//   已知低于 60 Hz 的外屏不接管：禁用场景配件，游戏层留在手机屏，交给系统镜像。否则显示链 / 纹理归还会把 60 帧游戏拖到外屏帧率。",
+              """//   低于 60 Hz 的外屏按游戏帧率分流：游戏目标帧率高于外屏刷新率（60 帧游戏 + 30 Hz AirPlay）不接管，
+          //   禁用场景配件、游戏层留在手机屏交给系统镜像；游戏帧率不高于外屏（30 帧游戏 + 30 Hz）才接管。""")
+
+          sub("ios/extdisplay.m",
+              "static UIWindowScene *g_scene;   // 外接屏场景（主线程）；nil = 没接",
+              """int nvn_be_fps_target(void) __attribute__((weak_import));   // graphics/nvn/gfx/nvn/nvn_mtl.m：游戏当前目标帧率（30 / 60）
+          static UIWindowScene *g_scene;   // 外接屏场景（主线程）；nil = 没接""")
+
+          sub("ios/extdisplay.m",
+              'static int ext_on(void) { const char *e = getenv("S2A_EXT_DISPLAY"); return !(e && !strcmp(e, "0")); }',
+              """static int ext_on(void) { const char *e = getenv("S2A_EXT_DISPLAY"); return !(e && !strcmp(e, "0")); }
+
+          // 30 Hz 级外屏（AirPlay 电视多为 30 Hz）能否接管：硬件门槛 24 Hz 起；60 Hz 及以上照旧；
+          //   24-59 Hz 只在「游戏自身目标帧率 <= 外屏刷新率」时接管——60 帧游戏一旦被 30 Hz 外屏接管，
+          //   显示链 / 纹理归还每帧要等一拍（33.3 ms），按帧推进的游戏会变成半速。
+          //   玩家在齿轮菜单里的显式选择优先（S2AExtMirrorOnAirPlay：1 = 镜像，0 = 接管），按游戏记住。
+          static long g_screen_hz;   // 当前外接屏最高刷新率（0 = 没接）
+          static dispatch_source_t g_guard;   // 接管期间的守护：游戏回到高于外屏的帧率就改回镜像
+          static int ext_mirror_auto(long hz) {
+              int fps = nvn_be_fps_target ? nvn_be_fps_target() : 60;
+              return hz > 0 && hz < 60 && fps > hz;          // 60 帧游戏 + 30 Hz 屏 = 自动镜像
+          }
+          static int ext_native_allowed(long hz) {
+              if (!s2a_ext_native_allowed(hz)) return 0;
+              NSUserDefaults *d = s2a_ios_settings_defaults();
+              id v = [d objectForKey:@"S2AExtMirrorOnAirPlay"];
+              if (v) return ![v boolValue];                  // 玩家显式选择优先（含 60 Hz 屏）
+              if (hz <= 0 || hz >= 60) return 1;
+              return !ext_mirror_auto(hz);
+          }
+          int s2a_ios_ext_auto_mirror(void) { return ext_mirror_auto(g_screen_hz); }   // 菜单勾选状态
+          static void ext_recheck_later(void);
+          static void ext_audio_route(int on);""")
+
+          sub("ios/extdisplay.m",
+              """    if (s2a_direct_relayout) s2a_direct_relayout(); // 先迁层，再释放它原来所在的窗口
+              w.hidden = YES;
+          }""",
+              """    if (s2a_direct_relayout) s2a_direct_relayout(); // 先迁层，再释放它原来所在的窗口
+              w.hidden = YES;
+              if (g_guard) { dispatch_source_cancel(g_guard); g_guard = nil; }
+              ext_audio_route(0);
+          }""")
+
+          sub("ios/extdisplay.m",
+              """        if (sc == phone || sc == disconnected) continue;
+                  if (!s2a_ext_native_allowed(sc.maximumFramesPerSecond)) { set_mirror_route(sc.maximumFramesPerSecond); return; }
+              }
+              g_mirror_hz = 0;""",
+              """        if (sc == phone || sc == disconnected) continue;
+                  g_screen_hz = sc.maximumFramesPerSecond;
+                  if (!ext_native_allowed(sc.maximumFramesPerSecond)) { set_mirror_route(sc.maximumFramesPerSecond); ext_recheck_later(); return; }
+              }
+              g_screen_hz = 0;
+              g_mirror_hz = 0;""")
+
+          sub("ios/extdisplay.m",
+              """static void observe_screens(void) {""",
+              """// 接管期间把音频会话切到 Playback（SoloAmbient / Ambient 不支持 AirPlay 输出），
+          //   拔掉 / 回镜像时恢复玩家的偏好（app.m 的 audio_category_apply 用同一组键）。
+          static void ext_audio_route(int on) {
+              dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                  AVAudioSession *s = AVAudioSession.sharedInstance; NSError *e = nil;
+                  if (on) [s setCategory:AVAudioSessionCategoryPlayback error:&e];
+                  else {
+                      NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+                      BOOL mix = [d boolForKey:@"S2AMixWithOthers"], play = [d boolForKey:@"S2APlayInSilentMode"];
+                      [s setCategory:(mix ? AVAudioSessionCategoryAmbient : play ? AVAudioSessionCategoryPlayback : AVAudioSessionCategorySoloAmbient) error:&e];
+                  }
+                  if (e) LOG("[声] 外接屏音频路由切换失败：%s", e.localizedDescription.UTF8String ?: "?");
+              });
+          }
+          // 起局时游戏还没报出真实帧率：4s 取样、10s 复核，两次一致才切换路线。
+          static void ext_recheck_later(void) {
+              static int scheduled;
+              if (scheduled) return; scheduled = 1;
+              __block int first = -1;
+              for (int i = 1; i <= 2; i++)
+                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i == 1 ? 4 : 10) * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                      int want = ext_mirror_auto(g_screen_hz);
+                      if (i == 1) first = want;
+                      else { if (want == first) refresh_screen_route(nil); scheduled = 0; }
+                  });
+          }
+          // 菜单切换后立即重估：先收回场景配件（在手机上就断场景），下一轮按新策略决定是否接管。
+          void s2a_ios_ext_apply_policy(void) {
+              if (@available(iOS 27.0, *)) ((UISceneAccessoryRegistration *)g_registration).enabled = NO;
+              dispatch_async(dispatch_get_main_queue(), ^{ refresh_screen_route(nil); });
+          }
+          // 接管期间每 12 秒守一次：游戏回到高于外屏的帧率（开场 30 帧过场结束、视频播完）就改回镜像，
+          //   避免 60 帧游戏因起局误判被整局压到 30 帧。
+          static void ext_guard_start(void) {
+              if (g_guard) return;
+              g_guard = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+              if (!g_guard) return;
+              dispatch_source_set_timer(g_guard, dispatch_time(DISPATCH_TIME_NOW, 12 * NSEC_PER_SEC), 12 * NSEC_PER_SEC, 1 * NSEC_PER_SEC);
+              dispatch_source_set_event_handler(g_guard, ^{
+                  if (!g_scene) { if (g_guard) { dispatch_source_cancel(g_guard); g_guard = nil; } return; }
+                  int fps = nvn_be_fps_target ? nvn_be_fps_target() : 60;
+                  BOOL forced = [s2a_ios_settings_defaults() objectForKey:@"S2AExtMirrorOnAirPlay"] != nil;
+                  if (!forced && g_screen_hz > 0 && g_screen_hz < 60 && fps > g_screen_hz) {
+                      LOG("外接屏：游戏回到 %d 帧，高于外屏 %ld Hz，改回镜像避免降速", fps, g_screen_hz);
+                      refresh_screen_route(nil);
+                  }
+              });
+              dispatch_resume(g_guard);
+          }
+
+          static void observe_screens(void) {""")
+
+          sub("ios/extdisplay.m",
+              """    g_scene = ws; note_ratio(z);""",
+              """    g_scene = ws; note_ratio(z); ext_audio_route(1); ext_guard_start();""")
+
+          sub("ios/extdisplay.m",
+              """        refresh_screen_route(nil); // 启动前已经连接的 30 Hz AirPlay 也必须走镜像""",
+              """        refresh_screen_route(nil); // 启动前已经连接的低刷 AirPlay 也按游戏帧率判定
+                  ext_recheck_later();""")
+
+          sub("ios/extdisplay.m",
+              """    if (!s2a_ext_native_allowed(sc.maximumFramesPerSecond)) {
+                  set_mirror_route(sc.maximumFramesPerSecond);""",
+              """    if (!ext_native_allowed(sc.maximumFramesPerSecond)) {
+                  set_mirror_route(sc.maximumFramesPerSecond);""")
+
+          # ---------------------------------------------------------------- 4) vpad.m
+          sub("ios/vpad.m",
+              "BOOL s2a_ios_ext_connected(void) __attribute__((weak_import));",
+              """BOOL s2a_ios_ext_connected(void) __attribute__((weak_import));
+          void s2a_ios_ext_apply_policy(void) __attribute__((weak_import));
+          int s2a_ios_ext_auto_mirror(void) __attribute__((weak_import));""")
+
+          sub("ios/vpad.m",
+              """    if (s2a_ios_ext_connected && s2a_ios_ext_connected()) {
+                  UIAction *screenLock = [UIAction actionWithTitle:S2AL(@"vpad.screenLock.title")""",
+              """    if (s2a_ios_ext_connected && s2a_ios_ext_connected()) {
+                  // 投屏：关闭 = 电视只显示游戏（手机留触屏手柄）；打开 = 电视跟着手机镜像。
+                  //   没有显式选择时按游戏帧率自动显示勾选：60 帧游戏默认镜像（30 Hz 外屏接管会压到 30 帧）。
+                  NSUserDefaults *extD = s2a_ios_settings_defaults();
+                  VPFlag mirrorTV = ^BOOL{
+                      id o = [extD objectForKey:@"S2AExtMirrorOnAirPlay"];
+                      return o ? [o boolValue] : (s2a_ios_ext_auto_mirror ? s2a_ios_ext_auto_mirror() != 0 : NO);
+                  };
+                  [items addObject:[self live:@"vp.ext.mirror" title:@"投屏时镜像手机画面"
+                                         note:@"关闭：电视只显示游戏，手机当手柄；打开：电视跟着手机镜像。本作帧率高于电视刷新率时，关闭会让游戏掉到电视帧率"
+                                           on:mirrorTV disabled:nil run:^{
+                      [extD setBool:!mirrorTV() forKey:@"S2AExtMirrorOnAirPlay"];
+                      if (s2a_ios_ext_apply_policy) s2a_ios_ext_apply_policy();
+                  }]];
+                  UIAction *screenLock = [UIAction actionWithTitle:S2AL(@"vpad.screenLock.title")""")
+
+          # ---------------------------------------------------------------- 5) settings.m
+          sub("ios/settings.m",
+              '@"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume"];',
+              '@"S2AFps60Asked", @"S2AFpsNative60", @"S2AFpsPick", S2AGameLanguageKey, @"S2AFrameInterp", @"S2AGameVolume", @"S2AExtMirrorOnAirPlay"];')
+
+          print("AirPlay policy applied.")
+          S2ARM_AIRPLAY_POLICY
+          git add ios/ext_display_policy.h ios/extdisplay.m ios/vpad.m ios/settings.m runtime/tests/t_ext_display_policy.c
+          git -c commit.gpgsign=false commit -m 'AirPlay second screen: 30 Hz takeover gated by the game frame rate'
           python3 pack/shell/closure.py pyimports
           python3 pack/shell/closure.py csiblings
           logs="$RUNNER_TEMP/s2arm-output/logs"
@@ -3492,12 +3724,12 @@ jobs:
           printf '0.4.3\n' > "$output/artifact/version.txt"
           cd "$output/artifact"
           shasum -a 256 S2Arm-Shell.tar.gz S2Arm-source.bundle s2arm-2x.patch s2arm-metal3-opt.patch metal3-cache-portable.log prewarm-status.txt diag-export-status.txt airplay-fps-status.txt version.txt rscale-gpu-status.txt rscale-device.log build-info.txt > SHA256SUMS.txt
-          echo 'Shell build completed. Download S2Arm-0.4.3-Shell-Metal3-Opt-LocalDiag from Artifacts and assemble with its matching source bundle. This experiment keeps Metal3, local ZIP diagnostics and the daily 0.4.3 fixes. Existing daily game resources need not be regenerated for these two runtime cache changes. Keep the daily IPA. Compare each cache switch separately at 1x handheld, original aspect; iPhone performance, memory and rendering remain unverified.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Shell build completed. Download S2Arm-0.4.3-Shell-AirPlay-Native from Artifacts and assemble with its matching source bundle. This experiment keeps Metal3, local ZIP diagnostics and the daily 0.4.3 fixes. Existing daily game resources need not be regenerated for these two runtime cache changes. Keep the daily IPA. Compare each cache switch separately at 1x handheld, original aspect; iPhone performance, memory and rendering remain unverified.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Shell
         uses: actions/upload-artifact@v7
         with:
-          name: S2Arm-0.4.3-Shell-Metal3-Opt-LocalDiag
+          name: S2Arm-0.4.3-Shell-AirPlay-Native
           path: ${{ runner.temp }}/s2arm-output/artifact/
           if-no-files-found: error
           compression-level: 0

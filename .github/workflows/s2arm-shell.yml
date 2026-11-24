@@ -114,8 +114,8 @@ jobs:
         \ off, interpolation on: no pink corrupted regions; compare local ghosting against interpolation off. Test foreground\
         \ restart and background/resume separately. Existing game resources can be reused; an updated runtime IPA is required.\n\
         diff --git \"a/docs/\\345\\235\\221\\350\\256\\260\\345\\275\\225.md\" \"b/docs/\\345\\235\\221\\350\\256\\260\\345\\\
-        275\\225.md\"\nindex f5a664d..f3fb2f0 100644\n--- \"a/docs/\\345\\235\\221\\350\\256\\260\\345\\275\\225.md\"\n+++\
-        \ \"b/docs/\\345\\235\\221\\350\\256\\260\\345\\275\\225.md\"\n@@ -11646,3 +11646,14 @@ Mac（M 系列，基于上游 0.6.7 的宿主；`DM_TEST_BG_LOSE=17`\
+        275\\225.md\"\nindex f5a664d..685bde8 100644\n--- \"a/docs/\\345\\235\\221\\350\\256\\260\\345\\275\\225.md\"\n+++\
+        \ \"b/docs/\\345\\235\\221\\350\\256\\260\\345\\275\\225.md\"\n@@ -11646,3 +11646,24 @@ Mac（M 系列，基于上游 0.6.7 的宿主；`DM_TEST_BG_LOSE=17`\
         \ 模拟系\n **实验数据（期望 → 真结果，宿主 macOS）**：`nvk_shader_pool_test --cs-libpack`：基底 main `512ca3ca0` + 新用例 → 红 3 项（SPIR-V 能力拒归「库件被拒收」而不是反射类；记坏程序的备忘为空\
         \ `(none)`；对齐闸拒查后命中记坏表仍是「非对齐」）；加本改动 326 项 0 失败。`libpack_vk_test`：期望命中 / 缺席键原因码 NONE → 命中 / 缺席键 NONE；spill 超限 → SHARED_LIMIT，不给文本缓冲（NULL\
         \ / 0）也是；Float64 能力拒与支撑缓冲归属拒 → REFLECT；gmem_map 无 guest 映射 → OTHER；拒收后紧接的命中不带旧码。改坏项：`--cs-libpack-mutants` 9 项各红在指定断言（含新增的共享内存\
@@ -128,48 +128,54 @@ jobs:
         \ 表示槽数量，4 槽只有 0..3；这不是缺少边界判断，而是表的容量不符合着色器接口。\n+\n+**本机读数**（Windows，无 Metal GPU，基线 `72018836`）：`fi_binding_probe.py`\
         \ 扫 5 个运动核、29 处绑定，期望全部槽在范围内 → 基线 1 处 MSL 声明及 2 处编码绑定越界；容量改 5 后 0 处。内存中回退为 4 槽，重新检出同样 3 处；缩成 2 个纹理槽，也能检出 shader / encoder\
         \ 的槽 2 越界。\n+\n+**做法**：只把运动表缓冲容量改为 5，保持运动估计、画幅、游戏节拍不变。真实 Metal 回归仍由 `t_fi_link` 做；灰度移动条增加全图 RGB 一致性检查，避免只看绿色通道漏掉粉红坏点。GPU\
-        \ / iPhone 结果须单独记录，静态检查不证明补帧视觉质量。\ndiff --git a/graphics/nvn/gfx/nvn/nvn_present_fi.inc b/graphics/nvn/gfx/nvn/nvn_present_fi.inc\n\
-        index 1f04962..d9fa050 100644\n--- a/graphics/nvn/gfx/nvn/nvn_present_fi.inc\n+++ b/graphics/nvn/gfx/nvn/nvn_present_fi.inc\n\
-        @@ -157,7 +157,9 @@ static int fi_mv_setup(NvPresentFI *f) {\n     // Metal 4 没有 setBytes：常量都在这一块共享缓冲里按偏移绑（建时写一次，方向每帧写）：0\
-        \ 细层块数 uint2（铺开用）、8 方向 float、12 铺开比例 uint、\n     //   16 粗层 gm uint4、32 细层 gm uint4、48 粗层 pn uint2（0 = 没有预测）、56 细层\
-        \ pn uint2（粗层网格）、64 切镜头阈值 float\n     f->mvArgs = [g_dev newBufferWithLength:80 options:MTLResourceStorageModeShared];\n\
-        -    NSError *te = nil; f->mvTab = tab_new(4, 3, 1, &te);\n+    // match writes the per-block error to buffer(4):\
-        \ slots 0..4 require five entries.\n+    // A four-entry table makes both coarse and fine matches bind beyond maxBufferBindCount.\n\
-        +    NSError *te = nil; f->mvTab = tab_new(5, 3, 1, &te);\n     if (!f->mvDown || !f->mvDown2 || !f->mvMatch || !f->mvSpread\
-        \ || !f->mvCut || !f->luma[0] || !f->luma[1] || !f->luma16[0] || !f->luma16[1] || !f->mvBlocks || !f->mvCoarse ||\
-        \ !f->mvSad || !f->mvFlag || !f->mvArgs || !f->mvTab) {\n         MLOG(\"【红】 frame interpolation motion setup: %s\"\
-        , (e ?: te).localizedDescription.UTF8String ?: \"resources\"); return 0; }\n     res_add(f->mvBlocks); res_add(f->mvCoarse);\
-        \ res_add(f->mvSad); res_add(f->mvFlag); res_add(f->mvArgs);\ndiff --git a/graphics/nvn/tests/fi_binding_probe.py\
-        \ b/graphics/nvn/tests/fi_binding_probe.py\nnew file mode 100644\nindex 0000000..c5235b2\n--- /dev/null\n+++ b/graphics/nvn/tests/fi_binding_probe.py\n\
-        @@ -0,0 +1,61 @@\n+#!/usr/bin/env python3\n+# SPDX-License-Identifier: Apache-2.0\n+# Copyright 2026 S2Arm contributors\n\
-        +\"\"\"Check the FI motion table against both MSL slots and encoded bindings.\n+\n+Portable contract check, not a\
-        \ GPU test. Metal's max*BindCount is a count,\n+so every shader/encoder index must be strictly smaller than that count.\n\
-        +Use --source to check a baseline or a negative-control copy without editing\n+the working tree. t_fi_link remains\
-        \ the actual Metal pixel regression.\n+\"\"\"\n+import argparse\n+import ast\n+from pathlib import Path\n+import re\n\
-        +\n+\n+def check(source: str) -> list[str]:\n+    setup = source.split(\"static int fi_mv_setup(\", 1)[1].split(\"\
-        static void fi_mv_encode(\", 1)[0]\n+    encode = source.split(\"static void fi_mv_encode(\", 1)[1].split(\"static\
-        \ int fi_copy_setup(\", 1)[0]\n+    allocation = re.search(r\"f->mvTab\\s*=\\s*tab_new\\((\\d+),\\s*(\\d+),\\s*(\\\
-        d+),\", setup)\n+    if allocation is None:\n+        raise ValueError(\"FI motion table allocation not found; update\
-        \ this probe for the new layout\")\n+    counts = dict(zip((\"buffer\", \"texture\", \"sampler\"), map(int, allocation.groups())))\n\
-        +    shader = \"\".join(ast.literal_eval(s) for s in re.findall(r'\"(?:[^\"\\\\]|\\\\.)*\"', setup))\n+    kernels\
-        \ = re.findall(r\"kernel void (\\w+)\\(\", shader)\n+    if len(kernels) != 5:\n+        raise ValueError(f\"expected\
-        \ five motion kernels, found {kernels}\")\n+    errors = []\n+    bindings = 0\n+    for kind, count in counts.items():\n\
-        +        indices = [int(i) for i in re.findall(r\"\\[\\[\" + kind + r\"\\((\\d+)\\)\\]\\]\", shader)]\n+        if\
-        \ indices and max(indices) >= count:\n+            errors.append(f\"MSL {kind}({max(indices)}) needs at least {max(indices)\
-        \ + 1} slots; table has {count}\")\n+        fn = {\"buffer\": \"buf\", \"texture\": \"tex\", \"sampler\": \"samp\"\
-        }[kind]\n+        calls = re.findall(r\"tab_\" + fn + r\"\\(t,([^;]+?)\\);\", encode)\n+        for call in calls:\n\
-        +            index = re.search(r\",\\s*(\\d+)\\s*$\", call)\n+            if index is None:\n+                raise\
-        \ ValueError(f\"nonliteral {kind} binding: {call}\")\n+            bindings += 1\n+            if int(index[1]) >=\
-        \ count:\n+                errors.append(f\"encoder {kind} slot {index[1]} out of range [0, {count})\")\n+    if bindings\
-        \ < 20:\n+        raise ValueError(f\"only {bindings} bindings found; probe did not cover the motion encoder\")\n\
-        +    print(f\"FI binding contract: {len(kernels)} kernels, {bindings} bindings; capacities {counts}\")\n+    return\
-        \ errors\n+\n+\n+def main() -> int:\n+    parser = argparse.ArgumentParser(description=__doc__)\n+    parser.add_argument(\"\
-        --source\", type=Path, default=Path(__file__).resolve().parents[1] / \"gfx/nvn/nvn_present_fi.inc\")\n+    args =\
-        \ parser.parse_args()\n+    errors = check(args.source.read_text(encoding=\"utf-8\"))\n+    for error in errors:\n\
-        +        print(f\"FAIL: {error}\")\n+    print(\"FAIL\" if errors else \"PASS\")\n+    return bool(errors)\n+\n+\n\
-        +if __name__ == \"__main__\":\n+    raise SystemExit(main())\ndiff --git a/graphics/nvn/tests/t_fi_link.m b/graphics/nvn/tests/t_fi_link.m\n\
-        index addebfb..c212ddc 100644\n--- a/graphics/nvn/tests/t_fi_link.m\n+++ b/graphics/nvn/tests/t_fi_link.m\n@@ -115,6\
-        \ +115,17 @@ int main(void) { @autoreleasepool {\n             id<MTLCommandBuffer> c = [[g_dev newCommandQueue] commandBuffer];\
+        \ / iPhone 结果须单独记录，静态检查不证明补帧视觉质量。\n+\n+## CI 出壳输入校验失败后保留构建证据（0.6.9 本地诊断）\n+\n+**现象 / 未定部分**：用户报告出壳输入表外读取 4581 个文件，开头包含\
+        \ README 与安卓文件；该次 Actions 运行已删除，无法复核读取者及发生阶段。尚不能确认是构建依赖遗漏还是外部进程访问。\n+\n+**已确认的证据缺口**：`shell_build.sh` 的 EXIT trap\
+        \ 删除本次临时目录，包含 `make.log` 和 NativeAOT 错误日志；后续 CI 收集步骤无法再取回。原闭包错误只打印前 30 个表外路径。\n+\n+**本地读数**（Windows，无 macOS 文件系统追踪）：诊断单测\
+        \ 7 项通过，覆盖登记 / 未登记 / 缺失文件、标记前失败、临时目录删除后的日志保留、追踪不可用及停止异常时仍返回构建失败码。日志目录被文件占用的负对照：原实现抛异常未执行构建 → 修正后照常执行并返回构建的退出码 11。macOS\
+        \ `fs_usage` 与真实出壳未验证。\n+\n+**做法**：只在设置 `S2A_SHELL_LOG_DIR` 时收集 mark / 编译 / 表清单 / 封壳 / 退出阶段的文件元数据，并在删除临时目录前复制 `.log`、`.err`。CI\
+        \ 额外记录私有镜像的文件访问进程，记录有大小上限。输入表校验保持原样，未登记输入不自动放行；诊断成功不等于构建或补帧问题已修复。\ndiff --git a/graphics/nvn/gfx/nvn/nvn_present_fi.inc\
+        \ b/graphics/nvn/gfx/nvn/nvn_present_fi.inc\nindex 1f04962..d9fa050 100644\n--- a/graphics/nvn/gfx/nvn/nvn_present_fi.inc\n\
+        +++ b/graphics/nvn/gfx/nvn/nvn_present_fi.inc\n@@ -157,7 +157,9 @@ static int fi_mv_setup(NvPresentFI *f) {\n    \
+        \ // Metal 4 没有 setBytes：常量都在这一块共享缓冲里按偏移绑（建时写一次，方向每帧写）：0 细层块数 uint2（铺开用）、8 方向 float、12 铺开比例 uint、\n     //   16 粗层\
+        \ gm uint4、32 细层 gm uint4、48 粗层 pn uint2（0 = 没有预测）、56 细层 pn uint2（粗层网格）、64 切镜头阈值 float\n     f->mvArgs = [g_dev newBufferWithLength:80\
+        \ options:MTLResourceStorageModeShared];\n-    NSError *te = nil; f->mvTab = tab_new(4, 3, 1, &te);\n+    // match\
+        \ writes the per-block error to buffer(4): slots 0..4 require five entries.\n+    // A four-entry table makes both\
+        \ coarse and fine matches bind beyond maxBufferBindCount.\n+    NSError *te = nil; f->mvTab = tab_new(5, 3, 1, &te);\n\
+        \     if (!f->mvDown || !f->mvDown2 || !f->mvMatch || !f->mvSpread || !f->mvCut || !f->luma[0] || !f->luma[1] || !f->luma16[0]\
+        \ || !f->luma16[1] || !f->mvBlocks || !f->mvCoarse || !f->mvSad || !f->mvFlag || !f->mvArgs || !f->mvTab) {\n    \
+        \     MLOG(\"【红】 frame interpolation motion setup: %s\", (e ?: te).localizedDescription.UTF8String ?: \"resources\"\
+        ); return 0; }\n     res_add(f->mvBlocks); res_add(f->mvCoarse); res_add(f->mvSad); res_add(f->mvFlag); res_add(f->mvArgs);\n\
+        diff --git a/graphics/nvn/tests/fi_binding_probe.py b/graphics/nvn/tests/fi_binding_probe.py\nnew file mode 100644\n\
+        index 0000000..c5235b2\n--- /dev/null\n+++ b/graphics/nvn/tests/fi_binding_probe.py\n@@ -0,0 +1,61 @@\n+#!/usr/bin/env\
+        \ python3\n+# SPDX-License-Identifier: Apache-2.0\n+# Copyright 2026 S2Arm contributors\n+\"\"\"Check the FI motion\
+        \ table against both MSL slots and encoded bindings.\n+\n+Portable contract check, not a GPU test. Metal's max*BindCount\
+        \ is a count,\n+so every shader/encoder index must be strictly smaller than that count.\n+Use --source to check a\
+        \ baseline or a negative-control copy without editing\n+the working tree. t_fi_link remains the actual Metal pixel\
+        \ regression.\n+\"\"\"\n+import argparse\n+import ast\n+from pathlib import Path\n+import re\n+\n+\n+def check(source:\
+        \ str) -> list[str]:\n+    setup = source.split(\"static int fi_mv_setup(\", 1)[1].split(\"static void fi_mv_encode(\"\
+        , 1)[0]\n+    encode = source.split(\"static void fi_mv_encode(\", 1)[1].split(\"static int fi_copy_setup(\", 1)[0]\n\
+        +    allocation = re.search(r\"f->mvTab\\s*=\\s*tab_new\\((\\d+),\\s*(\\d+),\\s*(\\d+),\", setup)\n+    if allocation\
+        \ is None:\n+        raise ValueError(\"FI motion table allocation not found; update this probe for the new layout\"\
+        )\n+    counts = dict(zip((\"buffer\", \"texture\", \"sampler\"), map(int, allocation.groups())))\n+    shader = \"\
+        \".join(ast.literal_eval(s) for s in re.findall(r'\"(?:[^\"\\\\]|\\\\.)*\"', setup))\n+    kernels = re.findall(r\"\
+        kernel void (\\w+)\\(\", shader)\n+    if len(kernels) != 5:\n+        raise ValueError(f\"expected five motion kernels,\
+        \ found {kernels}\")\n+    errors = []\n+    bindings = 0\n+    for kind, count in counts.items():\n+        indices\
+        \ = [int(i) for i in re.findall(r\"\\[\\[\" + kind + r\"\\((\\d+)\\)\\]\\]\", shader)]\n+        if indices and max(indices)\
+        \ >= count:\n+            errors.append(f\"MSL {kind}({max(indices)}) needs at least {max(indices) + 1} slots; table\
+        \ has {count}\")\n+        fn = {\"buffer\": \"buf\", \"texture\": \"tex\", \"sampler\": \"samp\"}[kind]\n+      \
+        \  calls = re.findall(r\"tab_\" + fn + r\"\\(t,([^;]+?)\\);\", encode)\n+        for call in calls:\n+           \
+        \ index = re.search(r\",\\s*(\\d+)\\s*$\", call)\n+            if index is None:\n+                raise ValueError(f\"\
+        nonliteral {kind} binding: {call}\")\n+            bindings += 1\n+            if int(index[1]) >= count:\n+     \
+        \           errors.append(f\"encoder {kind} slot {index[1]} out of range [0, {count})\")\n+    if bindings < 20:\n\
+        +        raise ValueError(f\"only {bindings} bindings found; probe did not cover the motion encoder\")\n+    print(f\"\
+        FI binding contract: {len(kernels)} kernels, {bindings} bindings; capacities {counts}\")\n+    return errors\n+\n\
+        +\n+def main() -> int:\n+    parser = argparse.ArgumentParser(description=__doc__)\n+    parser.add_argument(\"--source\"\
+        , type=Path, default=Path(__file__).resolve().parents[1] / \"gfx/nvn/nvn_present_fi.inc\")\n+    args = parser.parse_args()\n\
+        +    errors = check(args.source.read_text(encoding=\"utf-8\"))\n+    for error in errors:\n+        print(f\"FAIL:\
+        \ {error}\")\n+    print(\"FAIL\" if errors else \"PASS\")\n+    return bool(errors)\n+\n+\n+if __name__ == \"__main__\"\
+        :\n+    raise SystemExit(main())\ndiff --git a/graphics/nvn/tests/t_fi_link.m b/graphics/nvn/tests/t_fi_link.m\nindex\
+        \ addebfb..c212ddc 100644\n--- a/graphics/nvn/tests/t_fi_link.m\n+++ b/graphics/nvn/tests/t_fi_link.m\n@@ -115,6 +115,17\
+        \ @@ int main(void) { @autoreleasepool {\n             id<MTLCommandBuffer> c = [[g_dev newCommandQueue] commandBuffer];\
         \ id<MTLBlitCommandEncoder> b = [c blitCommandEncoder];\n             [b copyFromTexture:f->mid_tex sourceSlice:0\
         \ sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1) toBuffer:rb destinationOffset:0\
         \ destinationBytesPerRow:W * 4 destinationBytesPerImage:(NSUInteger)W * H * 4];\n             [b endEncoding]; [c\
@@ -419,7 +425,117 @@ jobs:
         ], path\n+    shell = json.loads((root / \"shell/Sources/ShellUI/Resources/Localizable.xcstrings\").read_text(encoding=\"\
         utf-8\"))\n+    assert shell[\"strings\"][\"Report a problem\"][\"localizations\"][path.parent.stem][\"stringUnit\"\
         ][\"value\"] == strings[\"diag.export\"], path\n+print(\"PASS: both diagnostic entry points export locally; all iOS\
-        \ report labels match export\")\ndiff --git a/shell/Sources/ShellUI/Resources/Localizable.xcstrings b/shell/Sources/ShellUI/Resources/Localizable.xcstrings\n\
+        \ report labels match export\")\ndiff --git a/pack/shell/diagnostics.py b/pack/shell/diagnostics.py\nnew file mode\
+        \ 100644\nindex 0000000..b8c3802\n--- /dev/null\n+++ b/pack/shell/diagnostics.py\n@@ -0,0 +1,75 @@\n+#!/usr/bin/env\
+        \ python3\n+# SPDX-License-Identifier: Apache-2.0\n+# Copyright 2026 S2Arm contributors\n+\"\"\"Optional shell-build\
+        \ evidence; never changes closure decisions or input files.\"\"\"\n+import argparse\n+import json\n+import os\n+from\
+        \ pathlib import Path\n+import shutil\n+import stat\n+\n+import closure\n+\n+\n+def snapshot(repo, output, phase):\n\
+        +    repo, output = Path(repo), Path(output)\n+    listing = Path(closure.listing(str(repo)))\n+    result = dict(phase=phase,\
+        \ listing_available=listing.is_file(), observed=[], unregistered=[], missing=[], errors=[])\n+    if listing.is_file():\n\
+        +        files = listing.read_text(encoding='utf-8').splitlines()\n+        rows = closure.table(str(repo))\n+   \
+        \     for rel in sorted(files):\n+            if not closure.countable(rel):\n+                continue\n+       \
+        \     try:\n+                info = (repo / rel).lstat()\n+            except FileNotFoundError:\n+              \
+        \  result['missing'].append(rel)\n+                continue\n+            except OSError as error:\n+            \
+        \    result['errors'].append(dict(path=rel, error=str(error)))\n+                continue\n+            if not stat.S_ISREG(info.st_mode)\
+        \ or info.st_atime <= closure.MARK + 86400:\n+                continue\n+            result['observed'].append(dict(path=rel,\
+        \ atime_ns=info.st_atime_ns,\n+                                           mtime_ns=info.st_mtime_ns, size=info.st_size))\n\
+        +            if not closure.covered(rel, rows):\n+                result['unregistered'].append(rel)\n+    output.mkdir(parents=True,\
+        \ exist_ok=True)\n+    (output / f'closure-{phase}.json').write_text(json.dumps(result, ensure_ascii=False, indent=2)\
+        \ + '\\n', encoding='utf-8')\n+    print(f\"Shell evidence [{phase}]: listing={result['listing_available']}, \"\n\
+        +          f\"observed={len(result['observed'])}, unregistered={len(result['unregistered'])}, \"\n+          f\"missing={len(result['missing'])},\
+        \ stat_errors={len(result['errors'])}\")\n+    return result\n+\n+\n+def save_logs(build, output):\n+    build, output\
+        \ = Path(build), Path(output)\n+    for parent, dirs, names in os.walk(build, followlinks=False):\n+        dirs[:]\
+        \ = [d for d in dirs if not (Path(parent) / d).is_symlink()]\n+        for name in names:\n+            path = Path(parent)\
+        \ / name\n+            if path.suffix not in ('.log', '.err') or path.is_symlink() or not path.is_file():\n+     \
+        \           continue\n+            dest = output / 'compiler' / path.relative_to(build)\n+            dest.parent.mkdir(parents=True,\
+        \ exist_ok=True)\n+            shutil.copyfile(path, dest)\n+\n+\n+def main():\n+    parser = argparse.ArgumentParser(description=__doc__)\n\
+        +    sub = parser.add_subparsers(dest='command', required=True)\n+    snap = sub.add_parser('snapshot')\n+    snap.add_argument('repo');\
+        \ snap.add_argument('output'); snap.add_argument('phase')\n+    logs = sub.add_parser('save-logs')\n+    logs.add_argument('build');\
+        \ logs.add_argument('output')\n+    args = parser.parse_args()\n+    if args.command == 'snapshot':\n+        snapshot(args.repo,\
+        \ args.output, args.phase)\n+    else:\n+        save_logs(args.build, args.output)\n+\n+\n+if __name__ == '__main__':\n\
+        +    main()\ndiff --git a/pack/shell/trace_build.py b/pack/shell/trace_build.py\nnew file mode 100644\nindex 0000000..7f80899\n\
+        --- /dev/null\n+++ b/pack/shell/trace_build.py\n@@ -0,0 +1,107 @@\n+#!/usr/bin/env python3\n+# SPDX-License-Identifier:\
+        \ Apache-2.0\n+# Copyright 2026 S2Arm contributors\n+\"\"\"CI-only macOS filesystem trace, filtered to the private\
+        \ shell mirror.\"\"\"\n+import argparse\n+from collections import Counter\n+import json\n+from pathlib import Path\n\
+        +import re\n+import subprocess\n+import sys\n+import threading\n+\n+\n+def run(command, output, mirror, tracer=None):\n\
+        +    output = Path(output)\n+    try:\n+        output.mkdir(parents=True, exist_ok=True)\n+    except OSError as\
+        \ error:\n+        print(f'Filesystem trace unavailable: {error}', file=sys.stderr)\n+        return subprocess.call(command)\n\
+        +    use_sudo = tracer is None\n+    tracer = tracer or ['sudo', '-n', '/usr/bin/fs_usage', '-w', '-f', 'filesys',\
+        \ '-t', '5400']\n+    status = dict(matched_lines=0, saved_lines=0, truncated=False, messages=[])\n+    readers =\
+        \ Counter()\n+    proc = None\n+    worker = None\n+\n+    def collect():\n+        size = 0\n+        with (output\
+        \ / 'filesystem-mirror.log').open('w', encoding='utf-8') as log:\n+            for line in proc.stdout:\n+       \
+        \         if mirror in line:\n+                    status['matched_lines'] += 1\n+                    readers[line.rsplit(None,\
+        \ 1)[-1].strip()] += 1\n+                    # stat-only activity is summarized but does not flood the event file.\n\
+        +                    if re.search(r'\\b(?:l?stat(?:64)?|getattrlist|access|utimes)\\b', line):\n+                \
+        \        continue\n+                    if size < 32 * 1024 * 1024:\n+                        log.write(line)\n+ \
+        \                       size += len(line.encode('utf-8'))\n+                        status['saved_lines'] += 1\n+\
+        \                    else:\n+                        status['truncated'] = True\n+                elif len(status['messages'])\
+        \ < 20 and re.search(r'fs_usage:|sudo:|denied|lost events|ktrace', line, re.I):\n+                    status['messages'].append(line.strip())\n\
+        +\n+    try:\n+        proc = subprocess.Popen(tracer, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n+      \
+        \                          text=True, encoding='utf-8', errors='replace')\n+        worker = threading.Thread(target=collect,\
+        \ daemon=True)\n+        worker.start()\n+    except OSError as error:\n+        status['start_error'] = str(error)\n\
+        +    try:\n+        # No shell wrapper swallows the real build exit code.\n+        return subprocess.call(command)\n\
+        +    finally:\n+        try:\n+            finish_trace(proc, worker, use_sudo, status)\n+        except (OSError,\
+        \ subprocess.SubprocessError) as error:\n+            status['stop_error'] = str(error)\n+        status['process_threads']\
+        \ = dict(readers) if worker is None or not worker.is_alive() else {}\n+        try:\n+            (output / 'filesystem-trace-status.json').write_text(json.dumps(status,\
+        \ indent=2) + '\\n', encoding='utf-8')\n+        except OSError as error:\n+            print(f'Cannot save trace\
+        \ status: {error}', file=sys.stderr)\n+        print(f\"Filesystem trace: {status['matched_lines']} mirror events;\
+        \ status saved in {output}\", flush=True)\n+\n+\n+def finish_trace(proc, worker, use_sudo, status):\n+    if proc\
+        \ is not None:\n+        try:\n+            proc.wait(timeout=1)\n+        except subprocess.TimeoutExpired:\n+  \
+        \          # Only the PID created above; never signal a process group or unrelated tools.\n+            if use_sudo:\n\
+        +                subprocess.run(['sudo', '-n', '/bin/kill', '-INT', str(proc.pid)],\n+                           \
+        \    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)\n+            else:\n+                proc.terminate()\n\
+        +            try:\n+                proc.wait(timeout=5)\n+            except subprocess.TimeoutExpired:\n+      \
+        \          if use_sudo:\n+                    subprocess.run(['sudo', '-n', '/bin/kill', '-KILL', str(proc.pid)],\n\
+        +                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)\n+          \
+        \      else:\n+                    proc.kill()\n+                proc.wait(timeout=5)\n+        worker.join(timeout=5)\n\
+        +        status['trace_exit_code'] = proc.returncode\n+        status['collector_finished'] = not worker.is_alive()\n\
+        +        if not worker.is_alive():\n+            proc.stdout.close()\n+\n+\n+if __name__ == '__main__':\n+    parser\
+        \ = argparse.ArgumentParser(description=__doc__)\n+    parser.add_argument('--output', required=True)\n+    parser.add_argument('--mirror',\
+        \ required=True)\n+    parser.add_argument('command', nargs=argparse.REMAINDER)\n+    args = parser.parse_args()\n\
+        +    command = args.command[1:] if args.command[:1] == ['--'] else args.command\n+    if not command:\n+        parser.error('a\
+        \ build command is required after --')\n+    raise SystemExit(run(command, args.output, args.mirror))\ndiff --git\
+        \ a/pack/shell_build.sh b/pack/shell_build.sh\nindex 5637a0e..6666018 100755\n--- a/pack/shell_build.sh\n+++ b/pack/shell_build.sh\n\
+        @@ -36,12 +36,26 @@ for v in S2A_CS_CACHE S2A_VPX_CACHE S2A_OPUS_CACHE S2A_DAV1D_CACHE; do [ -n \"${!\n # GNU Make\
+        \ ≥ 4（tools/gmake.sh；系统 /usr/bin/make 3.81 的 -j 令牌会卡死，11-06 docs/坑记录.md）：找不到就报红，不悄悄退回 3.81\n source \"$R/tools/gmake.sh\"\
+        ; MK=$(s2a_gmake) || exit 1\n B=$(mktemp -d \"${TMPDIR:-/tmp}/s2a-shell.XXXXXX\") || exit 1\n-trap 'rm -rf \"${B:?}\"\
+        ' EXIT\n+# CI 可选证据输出；只读文件元数据，不补输入表、不跳过闭包。保存失败不盖掉真正的编译退出码。\n+shell_evidence() {\n+  [ -n \"${S2A_SHELL_LOG_DIR:-}\"\
+        \ ] && [ -n \"${S:-}\" ] || return 0\n+  \"${S2A_PY:-python3}\" \"$H/shell/diagnostics.py\" snapshot \"$S\" \"$S2A_SHELL_LOG_DIR\"\
+        \ \"$1\" \\\n+    || echo \"【黄】保存出壳文件读取记录失败：$1\" >&2\n+  return 0\n+}\n+shell_save_logs() {\n+  [ -n \"${S2A_SHELL_LOG_DIR:-}\"\
+        \ ] || return 0\n+  shell_evidence exit\n+  \"${S2A_PY:-python3}\" \"$H/shell/diagnostics.py\" save-logs \"$B\" \"\
+        $S2A_SHELL_LOG_DIR\" \\\n+    || echo \"【黄】保存出壳编译日志失败\" >&2\n+  return 0\n+}\n+trap 'shell_save_logs; rm -rf \"${B:?}\"\
+        ' EXIT\n # 私有镜像（见文件头）：一棵工作树一份，持锁进程死了接管；只同步源码面（build/、.git、obj/、bin/、__pycache__/ 不同步：增量产物留在镜像里），\n #   按内容比（-c）不保留源时间：内容没变的不重写（增量照样命中），变了的落当前时间（同\
+        \ tools/gate_ios.sh 的取舍）\n TK=$(printf %s \"$R\" | shasum | cut -c1-12); SM=${S2A_SHELL_MIRROR_DIR:-${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm/shell_src}/$TK;\
+        \ S=$SM/src; mkdir -p \"$S\" || exit 1\n until mkdir \"$S.lock\" 2> /dev/null; do p=$(cat \"$S.lock/pid\" 2> /dev/null);\
+        \ [ -n \"$p\" ] && ! kill -0 \"$p\" 2> /dev/null && rm -rf \"$S.lock\"; sleep 1; done\n-echo $$ > \"$S.lock/pid\"\
+        ; trap 'rm -rf \"${B:?}\" \"$S.lock\"' EXIT; echo \"$R\" > \"$SM/tree\"\n+echo $$ > \"$S.lock/pid\"; trap 'shell_save_logs;\
+        \ rm -rf \"${B:?}\" \"$S.lock\"' EXIT; echo \"$R\" > \"$SM/tree\"\n # 镜像按树一份、工作树越开越多：取用即刷新本镜像时间，再按出包可重建缓存同一口径回收别的树最久没用的镜像（pack/jobs/cache_retention.py\
+        \ trim，\n #   1 小时内用过的不删；缺省位置连同运行区别的可重建缓存一起算总量，另指的镜像目录只算它自己）\n touch \"$SM\"; RR=${S2A_RUN_ROOT:-$HOME/.s2arm/run}/s2arm\n\
+        @@ -53,6 +67,7 @@ n=${GIT_CONFIG_COUNT:-0}; export \"GIT_CONFIG_KEY_$n=core.trustctime\" \"GIT_CONFIG\n s2a_tc_sweep\
+        \ \"$S/build/.${OS}_toolchain\" \"$S/build/gal$GX/ios\" \"$S/build/nvn$GX/ios\" \"$S/build/${OS}_objcache\" || { echo\
+        \ \"【红】清不掉旧工具链编出的 iOS 中间产物（$S/build）\"; exit 1; }\n SN=$(s2a_nospace \"$S\") || { echo \"【红】建不了无空格别名（${S}）\"; exit\
+        \ 1; }\n \"${S2A_PY:-python3}\" \"$H/shell/closure.py\" mark \"$S\" --list-from \"$R\" || { echo \"【红】设不了出壳镜像文件访问时间（壳输入闭包）\"\
+        ; exit 1; }\n+shell_evidence marked\n t0=$SECONDS\n # 游戏库界面（runtime/build.mk S2A_SHELLUI）缺省按壳输入表：有「入 shell」行才编进壳。\n\
+        \ # Intel Mac 只有 tvOS 平台组件没装、xcodebuild 解析不出 generic/platform=tvOS；iOS 平台组件已装，xcodebuild 能编出库界面。\n@@ -68,6 +83,7 @@\
+        \ fi\n HC=$(git -C \"$R\" rev-parse HEAD) || { echo \"【红】取不到本树提交号\"; exit 1; }\n \"$MK\" -C \"$SN\" ROOT=\"$SN\" -j\"\
+        $S2A_JOBS\" -s ios S2A_APPLE_OS=$OS S2A_CS=1 S2A_SHELLUI=$SHELLUI IOS_BUNDLE=dev.s2arm.shell IOS_DISPLAY=S2Arm BUILD=\"\
+        $B/build\" IOS_OBJ_CACHE=\"$SN/build/${OS}_objcache\" S2A_COMMIT=\"$HC\" > \"$B/make.log\" 2>&1 \\\n   || { echo \"\
+        【红】make ios 失败：$(grep -a -m1 -E 'error:|\U0001F534|【红】' \"$B/make.log\" | cut -c1-200)\"; tail -20 \"$B/make.log\"\
+        ; exit 1; }\n+shell_evidence compiled\n APP=$B/build/ios/S2Arm.app\n HL=$S/build/gal$GX/ios/gal_helpers   # make ios\
+        \ 编渲染器库时一并出（graphics/metal ios 目标）\n { [ -f \"$HL/.stamp\" ] || \"$MK\" -C \"$SN\" ROOT=\"$SN\" -s \"$SN/build/gal$GX/ios/gal_helpers/.stamp\"\
+        \ >> \"$B/make.log\" 2>&1; } \\\n@@ -78,7 +94,9 @@ rm -rf \"$OUT.symbols\" && mkdir -p \"$OUT.symbols\" && cp \"$APP/S2Arm\"\
+        \ \"$OUT.symbol\n # tvOS 主屏图标（#1457）：tvOS 只认 actool 编的 Assets.car（分层品牌图标），出壳时编一次放进壳，玩家机上组装沿用（pack/tv_icon.py）\n [\
+        \ \"$OS\" = tvos ] && { \"${S2A_PY:-python3}\" \"$H/tv_icon.py\" \"$R/launchers/macos/Branding/AppIcon-iOS.png\" \"\
+        $APP\" || exit 1; }\n TABLES=$(\"$MK\" -C \"$SN\" -s print-app-tables S2A_APPLE_OS=$OS) || { echo \"【红】取不到随包表清单\"\
+        ; exit 1; }\n+shell_evidence tables\n \"${S2A_PY:-python3}\" \"$H/ship_ext.py\" shell --app \"$APP\" --out \"$OUT\"\
+        \ --tables \"$TABLES\" --entitlements \"$ENT\" || exit 1\n+shell_evidence sealed\n if [ -n \"${S2A_SHELL_CLOSURE_SUGGEST:-}\"\
+        \ ]; then \"${S2A_PY:-python3}\" \"$H/shell/closure.py\" suggest \"$S\" > \"$S2A_SHELL_CLOSURE_SUGGEST\" || exit 1\n\
+        \ else \"${S2A_PY:-python3}\" \"$H/shell/closure.py\" check \"$S\" || { rm -rf \"${OUT:?}\"; exit 1; }; fi\n echo\
+        \ \"\U0001F7E2 出壳用时 $((SECONDS - t0)) 秒\"\ndiff --git a/pack/stage_inputs/shell.tsv b/pack/stage_inputs/shell.tsv\n\
+        index 09d7c3c..09a1a28 100644\n--- a/pack/stage_inputs/shell.tsv\n+++ b/pack/stage_inputs/shell.tsv\n@@ -169,6 +169,8\
+        \ @@\n 入\tpack/jobs/errors.py\n 入\tpack/pkg_srcs.py\n 入\tpack/shell/manifest.py\n+外\tpack/shell/diagnostics.py\t可选\
+        \ CI 日志与访问时间快照，不影响壳内容\n+外\tpack/shell/trace_build.py\tCI 文件访问跟踪，不影响壳内容\n 入\tpack/shell_build.sh\n 入\tpack/ship_ext.py\n\
+        \ 入\tpack/stage_inputs/shell.tsv\ndiff --git a/shell/Sources/ShellUI/Resources/Localizable.xcstrings b/shell/Sources/ShellUI/Resources/Localizable.xcstrings\n\
         index 7575552..a925027 100644\n--- a/shell/Sources/ShellUI/Resources/Localizable.xcstrings\n+++ b/shell/Sources/ShellUI/Resources/Localizable.xcstrings\n\
         @@ -20576,37 +20576,37 @@\n         \"en\": {\n           \"stringUnit\": {\n             \"state\": \"translated\"\
         ,\n-            \"value\": \"Report a problem\"\n+            \"value\": \"Export diagnostics\"\n           }\n  \
@@ -432,12 +548,71 @@ jobs:
         \       \"stringUnit\": {\n             \"state\": \"translated\",\n-            \"value\": \"故障报修\"\n+          \
         \  \"value\": \"导出诊断包\"\n           }\n         },\n         \"zh-Hant\": {\n           \"stringUnit\": {\n      \
         \       \"state\": \"translated\",\n-            \"value\": \"故障報修\"\n+            \"value\": \"匯出診斷包\"\n        \
-        \   }\n         }\n       }\nS2ARM_FI_PATCH\ntest \"$(shasum -a 256 \"$RUNNER_TEMP/s2arm-fi.patch\" | cut -d ' ' -f1)\"\
-        \ = \"9f6c9ff6ead47782cba46c2cf6f2fd6226a044f1edbf7dc06ba34374e90bacc2\"\ngit apply --check \"$RUNNER_TEMP/s2arm-fi.patch\"\
-        \ngit apply \"$RUNNER_TEMP/s2arm-fi.patch\"\ngit switch -c s2arm-fi-fix-build\ngit add --all\ngit -c user.name='S2Arm\
-        \ Local Build' -c user.email='s2arm-local@users.noreply.github.com' commit -m 'fix: FI motion argument table and private\
-        \ local diagnostics'\ngit diff --exit-code\npython3 graphics/nvn/tests/fi_binding_probe.py | tee \"$RUNNER_TEMP/s2arm-output/logs/fi-binding.txt\"\
-        \npython3 ios/tests/local_diag_export_probe.py | tee \"$RUNNER_TEMP/s2arm-output/logs/local-diag.txt\"\ngit show 72018836e76c5e5c7d8bf0628b192c5a683639cb:graphics/nvn/gfx/nvn/nvn_present_fi.inc\
+        \   }\n         }\n       }\ndiff --git a/tests/shell_closure_test.sh b/tests/shell_closure_test.sh\nindex 21d4cd1..22b14cf\
+        \ 100755\n--- a/tests/shell_closure_test.sh\n+++ b/tests/shell_closure_test.sh\n@@ -1,5 +1,5 @@\n #!/bin/bash\n-#\
+        \ 门禁覆盖：pack/shell/closure.py pack/shell_build.sh pack/stage_inputs/shell.tsv tests/test_shell_closure.py\n+# 门禁覆盖：pack/shell/closure.py\
+        \ pack/shell/diagnostics.py pack/shell/trace_build.py pack/shell_build.sh pack/stage_inputs/shell.tsv tests/test_shell_closure.py\
+        \ tests/test_shell_diagnostics.py\n # 壳输入闭包单测（pack/shell/closure.py：访问时间设旧 → 读入点名、表外报红、全量重读判核不了、建议表收目录，约 1 秒）：bash\
+        \ tests/shell_closure_test.sh\n cd \"$(dirname \"$0\")/..\" || exit 1\n-\"${S2A_PY:-python3}\" -B tests/test_shell_closure.py\n\
+        +\"${S2A_PY:-python3}\" -B tests/test_shell_closure.py && \"${S2A_PY:-python3}\" -B tests/test_shell_diagnostics.py\n\
+        diff --git a/tests/test_shell_diagnostics.py b/tests/test_shell_diagnostics.py\nnew file mode 100644\nindex 0000000..ca7339b\n\
+        --- /dev/null\n+++ b/tests/test_shell_diagnostics.py\n@@ -0,0 +1,113 @@\n+#!/usr/bin/env python3\n+# SPDX-License-Identifier:\
+        \ Apache-2.0\n+# Copyright 2026 S2Arm contributors\n+\"\"\"Build evidence survives cleanup without reading source\
+        \ file contents.\"\"\"\n+import importlib.util\n+import json\n+import os\n+from pathlib import Path\n+import sys\n\
+        +import tempfile\n+import unittest\n+\n+ROOT = Path(__file__).resolve().parents[1]\n+sys.path.insert(0, str(ROOT /\
+        \ 'pack/shell'))\n+import closure\n+\n+\n+class Diagnostics(unittest.TestCase):\n+    @classmethod\n+    def setUpClass(cls):\n\
+        +        spec = importlib.util.spec_from_file_location('shell_diagnostics', ROOT / 'pack/shell/diagnostics.py')\n\
+        +        cls.diag = importlib.util.module_from_spec(spec)\n+        spec.loader.exec_module(cls.diag)\n+\n+    def\
+        \ setUp(self):\n+        self.temp = tempfile.TemporaryDirectory()\n+        self.addCleanup(self.temp.cleanup)\n\
+        +        self.root = Path(self.temp.name) / 'source'\n+        self.output = Path(self.temp.name) / 'logs'\n+    \
+        \    self.root.mkdir()\n+        files = {'src/a.c': b'input', 'docs/unlisted.md': b'document',\n+               \
+        \  'pack/stage_inputs/shell.tsv': '入\\tsrc\\n'.encode('utf-8')}\n+        for rel, body in files.items():\n+     \
+        \       p = self.root / rel\n+            p.parent.mkdir(parents=True, exist_ok=True)\n+            p.write_bytes(body)\n\
+        +            os.utime(p, (closure.MARK, closure.MARK))\n+        self.listing = Path(closure.listing(str(self.root)))\n\
+        +        self.listing.write_text('\\n'.join(files) + '\\nmissing.c\\n', encoding='utf-8')\n+        self.addCleanup(self.listing.unlink,\
+        \ missing_ok=True)\n+\n+    def test_snapshot_distinguishes_registered_and_missing_inputs(self):\n+        baseline\
+        \ = self.diag.snapshot(self.root, self.output, 'marked')\n+        self.assertEqual(baseline['observed'], [])\n+ \
+        \       self.assertEqual(baseline['missing'], ['missing.c'])\n+        for rel in ('src/a.c', 'docs/unlisted.md'):\n\
+        +            os.utime(self.root / rel, (closure.MARK + 172800, closure.MARK))\n+        result = self.diag.snapshot(self.root,\
+        \ self.output, 'compiled')\n+        self.assertEqual([x['path'] for x in result['observed']], ['docs/unlisted.md',\
+        \ 'src/a.c'])\n+        self.assertEqual(result['unregistered'], ['docs/unlisted.md'])\n+        self.assertEqual(json.loads((self.output\
+        \ / 'closure-compiled.json').read_text()), result)\n+        self.assertEqual((self.root / 'src/a.c').stat().st_mtime,\
+        \ closure.MARK)\n+\n+    def test_missing_listing_is_explicit(self):\n+        self.listing.unlink()\n+        result\
+        \ = self.diag.snapshot(self.root, self.output, 'early-failure')\n+        self.assertFalse(result['listing_available'])\n\
+        +\n+    def test_compiler_logs_survive_build_directory_cleanup(self):\n+        build = Path(self.temp.name) / 'temporary-build'\n\
+        +        for rel, body in [('make.log', b'link ok\\n'), ('build/cs/nxaot_ios.err', b'compiler details\\n'),\n+   \
+        \                       ('build/ios/app.bin', b'not a log')]:\n+            p = build / rel\n+            p.parent.mkdir(parents=True,\
+        \ exist_ok=True)\n+            p.write_bytes(body)\n+        self.diag.save_logs(build, self.output)\n+        import\
+        \ shutil\n+        shutil.rmtree(build)\n+        self.assertEqual((self.output / 'compiler/make.log').read_bytes(),\
+        \ b'link ok\\n')\n+        self.assertEqual((self.output / 'compiler/build/cs/nxaot_ios.err').read_bytes(), b'compiler\
+        \ details\\n')\n+        self.assertFalse((self.output / 'compiler/build/ios/app.bin').exists())\n+\n+    def test_trace_keeps_mirror_events_and_build_exit_code(self):\n\
+        +        import trace_build\n+        # A finite fake tracer exercises collection without requiring macOS/root.\n\
+        +        tracer = [sys.executable, '-c', \"print('12:00 open /ci/mirror/src/README.md reader.123'); print('unrelated\
+        \ path')\"]\n+        code = trace_build.run([sys.executable, '-c', 'raise SystemExit(7)'],\n+                   \
+        \            self.output, '/ci/mirror', tracer=tracer)\n+        self.assertEqual(code, 7)\n+        trace = (self.output\
+        \ / 'filesystem-mirror.log').read_text()\n+        self.assertIn('README.md', trace)\n+        self.assertNotIn('unrelated\
+        \ path', trace)\n+        status = json.loads((self.output / 'filesystem-trace-status.json').read_text())\n+     \
+        \   self.assertEqual(status['matched_lines'], 1)\n+\n+    def test_unavailable_tracer_does_not_mask_build_failure(self):\n\
+        +        import trace_build\n+        code = trace_build.run([sys.executable, '-c', 'raise SystemExit(9)'], self.output,\n\
+        +                               '/ci/mirror', tracer=[str(self.root / 'no-such-tracer')])\n+        self.assertEqual(code,\
+        \ 9)\n+        status = json.loads((self.output / 'filesystem-trace-status.json').read_text())\n+        self.assertIn('start_error',\
+        \ status)\n+\n+    def test_unavailable_evidence_directory_does_not_prevent_build(self):\n+        import trace_build\n\
+        +        self.output.write_text('path is occupied by a file', encoding='utf-8')\n+        code = trace_build.run([sys.executable,\
+        \ '-c', 'raise SystemExit(11)'],\n+                               self.output, '/ci/mirror')\n+        self.assertEqual(code,\
+        \ 11)\n+\n+    def test_trace_shutdown_failure_does_not_mask_build_failure(self):\n+        import trace_build\n+\
+        \        from unittest.mock import patch\n+        with patch.object(trace_build, 'finish_trace', side_effect=OSError('trace\
+        \ stop failed')):\n+            code = trace_build.run([sys.executable, '-c', 'raise SystemExit(13)'], self.output,\n\
+        +                                   '/ci/mirror', tracer=[str(self.root / 'no-such-tracer')])\n+        self.assertEqual(code,\
+        \ 13)\n+        status = json.loads((self.output / 'filesystem-trace-status.json').read_text())\n+        self.assertEqual(status['stop_error'],\
+        \ 'trace stop failed')\n+\n+\n+if __name__ == '__main__':\n+    unittest.main()\nS2ARM_FI_PATCH\ntest \"$(shasum -a\
+        \ 256 \"$RUNNER_TEMP/s2arm-fi.patch\" | cut -d ' ' -f1)\" = \"89f2ede3a18de9ad6c1cc70f2217f373938b1229d9e91af42c59958b63ef4758\"\
+        \ngit apply --check \"$RUNNER_TEMP/s2arm-fi.patch\"\ngit apply \"$RUNNER_TEMP/s2arm-fi.patch\"\ngit switch -c s2arm-fi-fix-build\n\
+        git add --all\ngit -c user.name='S2Arm Local Build' -c user.email='s2arm-local@users.noreply.github.com' commit -m\
+        \ 'fix: FI motion argument table and private local diagnostics'\ngit diff --exit-code\npython3 graphics/nvn/tests/fi_binding_probe.py\
+        \ | tee \"$RUNNER_TEMP/s2arm-output/logs/fi-binding.txt\"\npython3 ios/tests/local_diag_export_probe.py | tee \"$RUNNER_TEMP/s2arm-output/logs/local-diag.txt\"\
+        \npython3 tests/test_shell_diagnostics.py 2>&1 | tee \"$RUNNER_TEMP/s2arm-output/logs/closure-diagnostics-tests.txt\"\
+        \npython3 tests/test_shell_closure.py 2>&1 | tee \"$RUNNER_TEMP/s2arm-output/logs/closure-filesystem-tests.txt\"\n\
+        python3 pack/shell/closure.py pyimports\npython3 pack/shell/closure.py csiblings\ngit show 72018836e76c5e5c7d8bf0628b192c5a683639cb:graphics/nvn/gfx/nvn/nvn_present_fi.inc\
         \ > \"$RUNNER_TEMP/fi-baseline.inc\"\nif python3 graphics/nvn/tests/fi_binding_probe.py --source \"$RUNNER_TEMP/fi-baseline.inc\"\
         \ > \"$RUNNER_TEMP/s2arm-output/logs/fi-negative-control.txt\" 2>&1; then\n  echo '::error::Baseline unexpectedly\
         \ passed the binding contract'; exit 1\nfi\ngrep -F 'MSL buffer(4) needs at least 5 slots; table has 4' \"$RUNNER_TEMP/s2arm-output/logs/fi-negative-control.txt\"\
@@ -556,11 +731,15 @@ jobs:
         fi
         cat "$logs/fi-gpu-status.txt" >> "$GITHUB_STEP_SUMMARY"
       timeout-minutes: 30
-    - name: Build Shell with the upstream entry point
+    - name: Build Shell with input-read diagnostics
       working-directory: source
       run: |
         set -euo pipefail
-        bash pack/shell_build.sh "$RUNNER_TEMP/s2arm-output/Shell" 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/build.log"
+        export S2A_SHELL_LOG_DIR="$RUNNER_TEMP/s2arm-output/logs/shell-evidence"
+        mkdir -p "$S2A_SHELL_LOG_DIR"
+        export GIT_TRACE2_EVENT="$S2A_SHELL_LOG_DIR/git-events.jsonl"
+        python3 pack/shell/trace_build.py --output "$S2A_SHELL_LOG_DIR" --mirror "$S2A_SHELL_MIRROR_DIR" -- \
+          bash pack/shell_build.sh "$RUNNER_TEMP/s2arm-output/Shell" 2>&1 | tee "$RUNNER_TEMP/s2arm-output/logs/build.log"
     - name: Verify Shell and package matching source
       working-directory: source
       run: |
@@ -572,7 +751,7 @@ jobs:
         {
           echo 'S2Arm 0.6.9 FI buffer-binding fix; local diagnostics export'
           echo 'Upstream: 72018836e76c5e5c7d8bf0628b192c5a683639cb'
-          echo 'Patch SHA256: 9f6c9ff6ead47782cba46c2cf6f2fd6226a044f1edbf7dc06ba34374e90bacc2'
+          echo 'Patch SHA256: 89f2ede3a18de9ad6c1cc70f2217f373938b1229d9e91af42c59958b63ef4758'
           echo "Build commit: $(git rev-parse HEAD)"
           echo "Source tree: $(git rev-parse HEAD^{tree})"
           echo 'Only the FI motion table capacity changes rendering: four buffer slots -> five.'
@@ -631,4 +810,4 @@ jobs:
         name: S2Arm-0.6.9-Shell-FIFix-LocalDiag-build-logs
         path: ${{ runner.temp }}/s2arm-output/logs/
         if-no-files-found: warn
-        retention-days: 7
+        retention-days: 14
